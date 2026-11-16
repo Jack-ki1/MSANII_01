@@ -1,0 +1,6 @@
+Flask>=3.0
+requests>=2.31
+cryptography>=42
+gunicorn>=22
+psycopg2-binary>=2.9.9
+pg8000>=1.31.0
