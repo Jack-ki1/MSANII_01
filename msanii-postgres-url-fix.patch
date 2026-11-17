@@ -1,0 +1,91 @@
+From 574e1b25af66cdbd9243494bf659623b8a23b472 Mon Sep 17 00:00:00 2001
+From: claude <claude@example.invalid>
+Date: Tue, 17 Nov 2026 13:06:25 +0000
+Subject: [PATCH] Accept POSTGRES_URL from the Supabase-Vercel integration;
+ strip driver-incompatible URL params
+
+---
+ .env.example          |  2 +-
+ README.md             |  2 +-
+ msanii/db.py          | 14 +++++++++++---
+ tests/test_honesty.py |  5 +++++
+ 4 files changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/.env.example b/.env.example
+index abba218..28596f5 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,7 +1,7 @@
+ # --- required in production (Vercel project settings > Environment Variables, or your container env) ---
+ MSANII_ENV=production                  # enables Secure cookies + HSTS. Vercel production/preview deployments are treated as production automatically
+ MSANII_FERNET_KEY=                     # python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"  (encrypts provider credentials + MFA secrets; keep it secret and stable)
+-SUPABASE_DB_URL=                       # Supabase > Project Settings > Database > Connection string > URI (use the pooler, port 6543). Required on Vercel.
++SUPABASE_DB_URL=                       # (or POSTGRES_URL / DATABASE_URL; the Supabase-Vercel integration sets POSTGRES_URL for you) Supabase > Project Settings > Database > Connection string > URI (use the pooler, port 6543). Required on Vercel.
+ MSANII_ALLOWED_ORIGINS=https://your-app.vercel.app
+ MSANII_BASE_URL=https://your-app.vercel.app    # used in invite e-mails
+ 
+diff --git a/README.md b/README.md
+index 98fba5a..8ccedac 100644
+--- a/README.md
++++ b/README.md
+@@ -72,7 +72,7 @@ cd frontend && npm run build
+ 
+ ### Vercel + Supabase
+ 1. **Database schema:** run `supabase_schema.sql` once (Supabase SQL editor, or `SUPABASE_DB_URL=... python manage.py migrate-pg`). It is idempotent. It enables row level security on every table with **no policies** and revokes `anon`/`authenticated` privileges: the app connects directly with its own role, never through the Supabase Data API. Do not add `USING (true)` policies.
+-2. **Vercel environment variables** (Project > Settings > Environment Variables, Production and Preview): `SUPABASE_DB_URL` (pooler URI, port 6543), `MSANII_FERNET_KEY`, `MSANII_ALLOWED_ORIGINS`, `MSANII_BASE_URL`, and for the first deploy only `MSANII_ADMIN_EMAIL` + `MSANII_ADMIN_PASSWORD`. Remove the password variable after the first sign-in. See `.env.example`. `vercel.json` no longer carries an `env` block: it is not applied at runtime.
++2. **Vercel environment variables** (Project > Settings > Environment Variables, Production and Preview): the database URL (either `SUPABASE_DB_URL`, or `POSTGRES_URL`, which the Supabase-Vercel integration creates for you; use the pooler, port 6543), `MSANII_FERNET_KEY`, `MSANII_ALLOWED_ORIGINS`, `MSANII_BASE_URL`, and for the first deploy only `MSANII_ADMIN_EMAIL` + `MSANII_ADMIN_PASSWORD`. Remove the password variable after the first sign-in. See `.env.example`. `vercel.json` no longer carries an `env` block: it is not applied at runtime.
+ 3. **Deploy** by pushing to the connected GitHub branch (or `vercel --prod`).
+ 4. **Know the limits of serverless:** the filesystem is ephemeral (`/tmp`), request bodies are capped (about 4.5 MB), there is no background scheduler, and heavy audio analysis (librosa) does not fit. Song Lab uploads and autonomous discovery need the Docker deployment below, or an external worker.
+ 
+diff --git a/msanii/db.py b/msanii/db.py
+index 3e00bf8..64e624a 100644
+--- a/msanii/db.py
++++ b/msanii/db.py
+@@ -1,4 +1,5 @@
+ import os, re, json, time, sqlite3, hashlib, logging, threading
++from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+ from flask import g, current_app, request, has_request_context
+ 
+ SCHEMA = """
+@@ -84,12 +85,19 @@ class PgConnection:
+     def rollback(self): self.conn.rollback()
+ 
+ 
++_DRIVER_UNSAFE = {"supa", "pgbouncer", "schema", "connection_limit", "pool_timeout"}   # added by Supabase/Prisma connection strings; libpq rejects them
++
+ def get_pg_url():
++    """Connection string from SUPABASE_DB_URL, DATABASE_URL or POSTGRES_URL (the one the Supabase-Vercel integration creates).
++    Query parameters that only Supabase/Prisma understand (e.g. `supa=base-pooler.x`) are removed because the PostgreSQL driver errors on them,
++    and TLS is required unless the host is local."""
+     u = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
+     if not u.startswith(("postgres://", "postgresql://")): return None
+-    if "sslmode=" not in u and not re.search(r"@(localhost|127\.0\.0\.1)[:/]", u):
+-        u += ("&" if "?" in u else "?") + "sslmode=require"           # Supabase only accepts TLS connections
+-    return u
++    parts = urlsplit(u)
++    q = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() not in _DRIVER_UNSAFE]
++    local = (parts.hostname or "") in ("localhost", "127.0.0.1", "::1") or not parts.hostname
++    if not local and not any(k.lower() == "sslmode" for k, _ in q): q.append(("sslmode", "require"))     # Supabase only accepts TLS connections
++    return urlunsplit(parts._replace(query=urlencode(q)))
+ 
+ get_supabase_url = get_pg_url    # backwards-compatible name
+ 
+diff --git a/tests/test_honesty.py b/tests/test_honesty.py
+index a7bc710..8bc96e0 100644
+--- a/tests/test_honesty.py
++++ b/tests/test_honesty.py
+@@ -172,6 +172,11 @@ class Startup(unittest.TestCase):
+             os.environ["SUPABASE_DB_URL"] = "postgresql://u:p@db.example.supabase.co:6543/postgres"; self.assertTrue(m.get_pg_url().endswith("?sslmode=require"))
+             os.environ["SUPABASE_DB_URL"] = "postgresql://u:p@localhost:5432/x"; self.assertNotIn("sslmode", m.get_pg_url())
+             os.environ["SUPABASE_DB_URL"] = "sqlite:///x"; self.assertIsNone(m.get_pg_url())
++            # what the Supabase-Vercel integration puts in POSTGRES_URL: the extra `supa` parameter must be dropped, the password left untouched
++            os.environ.pop("SUPABASE_DB_URL"); os.environ["POSTGRES_URL"] = "postgres://postgres.abcd:p%40ss%3Aw0rd@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require&supa=base-pooler.x"
++            u = m.get_pg_url(); self.assertNotIn("supa=", u); self.assertIn("p%40ss%3Aw0rd@aws-0-eu-west-1.pooler.supabase.com:6543/postgres", u); self.assertEqual(u.count("sslmode"), 1)
++            os.environ["POSTGRES_URL"] = "postgres://u:p@host.supabase.com:6543/postgres?pgbouncer=true"; self.assertEqual(m.get_pg_url(), "postgres://u:p@host.supabase.com:6543/postgres?sslmode=require")
++            self.assertIs(__import__("psycopg2").extensions.parse_dsn(m.get_pg_url())["host"] == "host.supabase.com", True)      # the real driver accepts the cleaned string
+         finally:
+             for k, v in old.items():
+                 os.environ.pop(k, None)
+-- 
+2.43.0
+
