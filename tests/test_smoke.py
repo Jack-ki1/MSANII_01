@@ -3,6 +3,7 @@ from cryptography.fernet import Fernet
 from msanii import create_app, engine, security
 from msanii.db import db, verify_audit
 from msanii.security import hash_pw, totp
+from . import pgsupport
 
 PW = "Passw0rd!xx"
 class Fake:
@@ -12,8 +13,8 @@ class Fake:
 
 class T(unittest.TestCase):
     def setUp(self):
-        security._hits.clear(); t = tempfile.mkdtemp()
-        self.app = create_app({"DB": f"{t}/t.db", "UPLOAD_DIR": f"{t}/up", "FERNET_KEY": Fernet.generate_key(), "ORIGINS": ["http://ok.test"], "SEED_OWNER": False})
+        security._hits.clear(); t = tempfile.mkdtemp(); pgsupport.prepare()
+        self.app = create_app({"DB": f"{t}/t.db", "UPLOAD_DIR": f"{t}/up", "FERNET_KEY": Fernet.generate_key(), "ORIGINS": ["http://ok.test"]})
         self._b = engine.build; engine.build = lambda n: Fake()
         for e, r in (("admin@x.test", "admin"), ("rev@x.test", "reviewer"), ("view@x.test", "viewer")): self.mk(e, r)
     def tearDown(self): engine.build = self._b

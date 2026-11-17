@@ -15,7 +15,7 @@ import { setNames } from "./shared";
 const NAV = [
   ["discover", "◎", "Discover", "Upcoming artist trajectory"],
   ["analyze", "🔬", "Analyze & Lab", "Forensics, stems & 20-plot telemetry"],
-  ["recommend", "★", "Recommend", "A&R deal valuation & $3,750 advance"],
+  ["recommend", "★", "Recommend", "Tiered recommendations & deal scenario"],
   ["settings", "⚙", "Settings & Guideline", "76+ providers & Python ML tuning"]
 ];
 

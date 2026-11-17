@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "api/index.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb"
+      }
     },
     {
       "src": "frontend/package.json",
@@ -30,9 +33,5 @@
       "src": "/(.*)",
       "dest": "/static/index.html"
     }
-  ],
-  "env": {
-    "MSANII_ENV": "production",
-    "MSANII_DB": "/tmp/msanii.db"
-  }
+  ]
 }

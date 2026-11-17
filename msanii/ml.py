@@ -1,259 +1,140 @@
-"""Machine Learning & Predictive Modeling Engine for Upcoming Music Artists.
-Focuses strictly on artists with <= 5 years industry tenure and rising velocity telemetry.
-Provides:
-1. Upcoming Artist Breakout Probability Model (calibrated logistic gradient)
-2. Time-Series Stream Trajectory Forecaster (90-day projection with confidence bands)
-3. Forensic Organic Integrity & Bot Detection Model (stream-to-follower repeat scatter & step anomaly)
-4. A&R Deal Valuation & Advance Recoupment Engine ($3,750 benchmark)
-5. Acoustic & Psychoacoustic intonation scoring (CREPE cent deviation, tessitura, stem occupancy)
+"""Heuristic scoring helpers for upcoming-artist triage.
+
+HONESTY CONTRACT
+- Everything here is a transparent heuristic computed from observations the platform actually holds. None of it is a trained or
+  calibrated model, and every result says so (`method`, `calibrated: False`).
+- Missing data is reported as missing (None / `insufficient_data`), never replaced by an optimistic default.
+- The acoustic "fixtures" at the bottom of this file are ILLUSTRATIVE SAMPLE VALUES used only for demo artists. They are never
+  computed from audio and must never be shown for a real artist (see api.dossier).
 """
-import math, time, json
+import math, time
 
 NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+CORRIDOR = (1.4, 4.5)          # heuristic plays-per-listener corridor; NOT empirically calibrated
+UPCOMING_YEARS = 5.0
 
 def note_name(midi_num):
-    if midi_num is None: return "C3"
-    n = int(round(midi_num))
-    return f"{NOTES[n % 12]}{(n // 12) - 1}"
+    if midi_num is None: return None
+    n = int(round(midi_num)); return f"{NOTES[n % 12]}{(n // 12) - 1}"
 
 def calculate_tenure(begin_year, first_seen=None):
-    """Returns artist career tenure in years. Max upcoming threshold is 5.0 years."""
-    current_year = time.localtime().tm_year
-    if begin_year and begin_year > 1990:
-        tenure = max(0.2, current_year - begin_year + 0.4)
-    elif first_seen:
-        tenure = max(0.2, round((time.time() - first_seen) / (365.25 * 86400), 2))
-    else:
-        tenure = 1.8  # default upcoming
-    return round(min(tenure, 15.0), 1)
+    """Career length in years from a KNOWN start year, else None. `first_seen` (when WE first found the artist) says nothing about
+    career length, so it is deliberately not used any more."""
+    if not begin_year or begin_year < 1900: return None
+    return round(min(max(0.2, time.localtime().tm_year - begin_year + 0.4), 60.0), 1)
 
 def is_upcoming(artist_dict):
-    """Determines if artist qualifies under the <= 5-year upcoming artist mandate."""
-    tenure = calculate_tenure(artist_dict.get("begin_year"), artist_dict.get("first_seen"))
-    return tenure <= 5.0
+    t = calculate_tenure(artist_dict.get("begin_year"), artist_dict.get("first_seen"))
+    return None if t is None else t <= UPCOMING_YEARS
+
+def _sigmoid(z): return 1.0 / (1.0 + math.exp(-z))
 
 def predict_breakout_probability(artist_dict, obs_series, assessment_dict=None):
-    """
-    Real upcoming artist breakout prediction model.
-    Weights:
-    - Career youth (bonus for <= 3 years)
-    - 30-day and 90-day velocity (positive growth momentum)
-    - Growth acceleration (increasing rate of change)
-    - Organic integrity (safe ratio, lack of bot flags)
-    - UGC creation velocity (sound snippet virality)
-    - Artistic quality score (AVM human/machine composite)
-    """
+    """Hand-weighted logistic SCORE, p = sigmoid(w.x + b), from growth momentum, acceleration, career youth, UGC and human quality.
+    The weights are priors set by judgement and have NOT been fitted to outcomes, so p is a ranking aid, not a calibrated probability.
+    Absent inputs contribute 0 (neutral). With no growth evidence at all the result is `insufficient_data` and the probability is None."""
+    A = assessment_dict or {}; obs_series = obs_series or {}
     tenure = calculate_tenure(artist_dict.get("begin_year"), artist_dict.get("first_seen"))
-    
-    # 1. Momentum & Velocity
-    momentum = 0.15
-    if assessment_dict and assessment_dict.get("momentum") is not None:
-        momentum = float(assessment_dict["momentum"])
-    elif "monthly_listeners" in obs_series and len(obs_series["monthly_listeners"]) > 1:
-        s = obs_series["monthly_listeners"]
-        momentum = (s[-1][1] - s[0][1]) / max(s[0][1], 1)
-        
-    # 2. Acceleration
-    accel = 0.08
-    if "monthly_listeners" in obs_series and len(obs_series["monthly_listeners"]) >= 3:
-        pts = [x[1] for x in obs_series["monthly_listeners"][-3:]]
-        v1 = (pts[1] - pts[0]) / max(pts[0], 1)
-        v2 = (pts[2] - pts[1]) / max(pts[1], 1)
-        accel = v2 - v1
+    series = None
+    for k in ("monthly_listeners", "lastfm_listeners", "deezer_fans", "spotify_followers", "audius_followers"):
+        if len(obs_series.get(k) or []) > 1: series = obs_series[k]; break
+    momentum = A.get("momentum")
+    if momentum is None and series: momentum = (series[-1][1] - series[0][1]) / max(series[0][1], 1)
+    accel = None
+    if series and len(series) >= 3:
+        p = [x[1] for x in series[-3:]]; accel = (p[2] - p[1]) / max(p[1], 1) - (p[1] - p[0]) / max(p[0], 1)
+    ugc = None
+    if obs_series.get("ugc_videos"): ugc = min(1.0, math.log10(max(obs_series["ugc_videos"][-1][1], 1)) / 4.0)
+    flags_n = len(A.get("flags") or []); art = A.get("artistic")
+    youth = 0.5 if tenure is None else max(0.0, (5.0 - tenure) / 4.0)
+    insufficient = momentum is None
+    z = (-1.6 + 2.8 * min(max(momentum or 0.0, -0.2), 1.2) + 1.8 * min(max(accel or 0.0, -0.2), 0.8) + 1.0 * youth
+         + 1.2 * (ugc or 0.0) + (0.025 * (float(art) - 50) if art is not None else 0.0) - 0.8 * min(flags_n, 3))
+    prob = None if insufficient else round(min(max(_sigmoid(z), 0.02), 0.98), 3)
+    if insufficient: cat = "Insufficient data"
+    elif prob >= 0.75: cat = "Fast Accelerator"
+    elif tenure is not None and tenure <= 2.0 and momentum > 0.05: cat = "Early Debut"
+    elif prob >= 0.55: cat = "Breakthrough Trajectory"
+    elif (ugc or 0) > 0.4: cat = "Viral UGC Spark"
+    else: cat = "Emerging Watch"
+    n = len(series) if series else 0
+    return {"breakout_probability": prob, "prob_pct": None if prob is None else round(prob * 100, 1), "tenure_years": tenure,
+            "is_upcoming": None if tenure is None else tenure <= UPCOMING_YEARS, "category": cat,
+            "velocity_mom": None if momentum is None else round(momentum * 100, 1), "acceleration": None if accel is None else round(accel * 100, 1),
+            "ugc_score": None if ugc is None else round(ugc * 100, 1), "confidence": 0.0 if insufficient else round(min(0.8, 0.35 + 0.04 * n), 2),
+            "insufficient_data": insufficient, "calibrated": False, "method": "hand-weighted logistic score (priors, not fitted to outcomes)"}
 
-    # 3. UGC Virality Signal
-    ugc_videos = 0
-    if "ugc_videos" in obs_series and obs_series["ugc_videos"]:
-        ugc_videos = obs_series["ugc_videos"][-1][1]
-    ugc_score = min(1.0, math.log10(max(ugc_videos, 1)) / 4.0)
-
-    # 4. Organic Integrity Factor
-    flags_count = len(assessment_dict.get("flags", [])) if assessment_dict else 0
-    integrity_factor = max(0.3, 1.0 - (flags_count * 0.22))
-
-    # 5. Artistic Quality
-    artistic_score = 75.0
-    if assessment_dict and assessment_dict.get("artistic") is not None:
-        artistic_score = float(assessment_dict["artistic"])
-
-    # 6. Career Youth Factor (Maximized at 1-3 years, decays as it approaches 5 years)
-    youth_factor = max(0.0, (5.0 - tenure) / 4.0)
-
-    # Logistic regression scoring function
-    z = (
-        -1.2
-        + 2.8 * min(max(momentum, -0.2), 1.2)
-        + 1.8 * min(max(accel, -0.2), 0.8)
-        + 1.4 * youth_factor
-        + 1.2 * ugc_score
-        + 0.025 * (artistic_score - 50)
-        + 0.9 * integrity_factor
-    )
-    prob = 1.0 / (1.0 + math.exp(-z))
-    prob = round(min(max(prob, 0.05), 0.98), 3)
-
-    # Trajectory classification
-    if prob >= 0.75:
-        category = "Fast Accelerator"
-    elif tenure <= 2.0 and momentum > 0.05:
-        category = "Early Debut"
-    elif tenure <= 5.0 and prob >= 0.55:
-        category = "Breakthrough Trajectory"
-    elif ugc_score > 0.4:
-        category = "Viral UGC Spark"
-    else:
-        category = "Emerging Watch"
-
-    return {
-        "breakout_probability": prob,
-        "prob_pct": round(prob * 100, 1),
-        "tenure_years": tenure,
-        "is_upcoming": tenure <= 5.0,
-        "category": category,
-        "velocity_mom": round(momentum * 100, 1),
-        "acceleration": round(accel * 100, 1),
-        "ugc_score": round(ugc_score * 100, 1),
-        "confidence": 0.88 if len(obs_series) > 1 else 0.65
-    }
+def _t95(df):  # two-sided 95% Student-t quantile, accurate to ~1% for df>=2
+    return 1.96 + 2.4 / df + 4.3 / (df * df)
 
 def forecast_trajectory(history_points, days_ahead=90):
-    """
-    Time-series forecasting model projecting next 90 days with 95% confidence intervals.
-    """
-    if not history_points or len(history_points) < 2:
-        base = history_points[-1][1] if history_points else 50000
-        # generate realistic projected curve
-        proj = []
-        now = time.time()
-        for d in [30, 60, 90]:
-            val = base * ((1.0 + 0.18) ** (d / 30))
-            proj.append({
-                "days": d,
-                "ts": now + d * 86400,
-                "expected": round(val),
-                "lower": round(val * 0.88),
-                "upper": round(val * 1.15)
-            })
-        return proj
-
-    # Log-linear trend regression
-    pts = history_points[-12:]
-    n = len(pts)
-    t0 = pts[0][0]
-    xs = [(p[0] - t0) / 86400.0 for p in pts]
-    ys = [math.log(max(p[1], 1)) for p in pts]
-
-    mean_x = sum(xs) / n
-    mean_y = sum(ys) / n
-    denom = sum((x - mean_x) ** 2 for x in xs) or 1.0
-    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
-    intercept = mean_y - slope * mean_x
-
-    # Bound daily growth to realistic bounds (-0.5% to +2% daily)
+    """Log-linear trend (OLS on ln y) with a proper 95% PREDICTION interval from the residuals:
+         se(x0) = s * sqrt(1 + 1/n + (x0 - xbar)^2 / Sxx),   band = exp(yhat +/- t * se).
+    Noisy history therefore widens the band, and far horizons widen it further. Fewer than 4 points or < 7 days of history returns []
+    (no forecast) instead of inventing growth."""
+    pts = [p for p in (history_points or []) if p[1] is not None and p[1] > 0][-12:]
+    if len(pts) < 4 or pts[-1][0] - pts[0][0] < 7 * 86400: return []
+    n = len(pts); t0 = pts[0][0]
+    xs = [(p[0] - t0) / 86400.0 for p in pts]; ys = [math.log(p[1]) for p in pts]
+    mx, my = sum(xs) / n, sum(ys) / n; sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx <= 0: return []
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+    clamped = not (-0.005 <= slope <= 0.02)
     slope = min(max(slope, -0.005), 0.02)
-    last_x = xs[-1]
-    last_ts = pts[-1][0]
-
-    out = []
-    for d in [30, 60, 90]:
-        fut_x = last_x + d
-        pred_log = intercept + slope * fut_x
-        exp_val = math.exp(pred_log)
-        vol = 0.08 * math.sqrt(d / 30.0)
-        out.append({
-            "days": d,
-            "ts": last_ts + d * 86400,
-            "expected": round(exp_val),
-            "lower": round(exp_val * math.exp(-1.96 * vol)),
-            "upper": round(exp_val * math.exp(1.96 * vol))
-        })
+    intercept = my - slope * mx                      # recomputed AFTER clamping so the line still passes through (xbar, ybar)
+    sse = sum((y - (intercept + slope * x)) ** 2 for x, y in zip(xs, ys)); s = max(math.sqrt(sse / (n - 2)), 0.03)
+    t = _t95(n - 2); out = []
+    for d in (30, 60, 90):
+        x0 = xs[-1] + d; yhat = intercept + slope * x0
+        se = s * math.sqrt(1 + 1 / n + (x0 - mx) ** 2 / sxx)
+        out.append({"days": d, "ts": pts[-1][0] + d * 86400, "expected": round(math.exp(yhat)), "lower": round(math.exp(yhat - t * se)),
+                    "upper": round(math.exp(yhat + t * se)), "slope_clamped": clamped, "n_points": n, "method": "log-linear OLS, 95% prediction interval"})
     return out
 
 def evaluate_organic_integrity(artist_data, observations):
-    """
-    Evaluates organic authenticity vs artificial click-farming / bot manipulation.
-    Calculates Stream-to-Follower Replay Ratio and Safe Zone certification.
-    """
-    # Stream to follower ratio
-    ratio = 3.42  # benchmark
-    streams = None
-    followers = None
-    for obs in observations:
-        m = obs.get("metric")
-        v = obs.get("value", 0)
-        if m in ("streams", "monthly_listeners"):
-            streams = v
-        elif m in ("spotify_followers", "deezer_fans", "lastfm_listeners"):
-            followers = v
+    """Plays-per-listener on ONE platform (Last.fm lifetime playcount / Last.fm listeners). A very high ratio can indicate repeat-play
+    farming and a very low one passive/algorithmic listening, but the corridor is a heuristic, and an outlier is a prompt to look closer,
+    never proof. With no usable data the answer is 'Insufficient data'."""
+    latest = {}
+    for o in observations or []:
+        if o.get("metric") in ("streams", "lastfm_listeners") and o.get("value"): latest[o["metric"]] = o["value"]     # observations arrive oldest -> newest
+    plays, listeners = latest.get("streams"), latest.get("lastfm_listeners")
+    if not plays or not listeners:
+        return {"ratio": None, "is_safe": None, "organic_confidence": None, "safe_zone_certified": False, "status_label": "Insufficient data",
+                "peers": [], "note": "Needs Last.fm playcount and Last.fm listeners for this artist."}
+    r = round(plays / listeners, 2); inside = CORRIDOR[0] <= r <= CORRIDOR[1]
+    return {"ratio": r, "is_safe": inside, "organic_confidence": None, "safe_zone_certified": False,
+            "status_label": "Within heuristic corridor" if inside else "Outside heuristic corridor: investigate", "peers": [],
+            "corridor": list(CORRIDOR), "note": "Last.fm plays per listener against an uncalibrated corridor. A signal, not a verdict."}
 
-    if streams and followers and followers > 0:
-        ratio = round(streams / followers, 2)
+def calculate_ar_advance_valuation(listeners, momentum=None, organic_ratio=None, catalog_size=0, plays_per_listener_month=3.0, label_share=0.35):
+    """Scenario calculator, not a valuation. Every assumption is returned so a human can challenge it:
+         gross_12m = listeners * plays/listener/month * 12 * payout/stream ; advance = gross_12m * label_share * catalog * growth * risk"""
+    if not listeners or listeners <= 0: return None
+    payout = 0.0032
+    gross = listeners * plays_per_listener_month * 12 * payout
+    cat = min(1.5, 0.8 + 0.1 * max(int(catalog_size or 0), 0))
+    growth = min(1.5, max(0.8, 1.0 + (momentum if momentum is not None else 0.0)))
+    risk = 0.7 if (organic_ratio is not None and not (CORRIDOR[0] <= organic_ratio <= CORRIDOR[1])) else 1.0
+    adv = int(round(gross * label_share * cat * growth * risk / 50.0) * 50)
+    monthly_label = max(listeners * plays_per_listener_month * payout * 0.5, 1.0)
+    rec = round(adv / monthly_label, 1)
+    return {"recommended_advance": adv, "formatted_advance": f"${adv:,.0f}", "recoupment_months": rec, "valuation_trend": None, "is_estimate": True,
+            "method": "scenario calculator: 12-month gross x label share x catalog x growth x risk", "currency": "USD",
+            "assumptions": {"plays_per_listener_month": plays_per_listener_month, "payout_per_stream_usd": payout, "label_share": label_share,
+                            "catalog_factor": round(cat, 2), "growth_factor": round(growth, 2), "risk_factor": risk},
+            "suggested_deal": "Scenario only: negotiate from the assumptions, not the output",
+            "deal_options": [{"type": "Distribution only (85/15)", "advance": 0, "recoup_months": 0, "royalty_split": "85% artist / 15% label"},
+                             {"type": "Master licensing (50/50)", "advance": adv, "recoup_months": rec, "royalty_split": "50% artist / 50% label"},
+                             {"type": "360 partnership", "advance": int(round(adv * 2.2 / 100) * 100), "recoup_months": round(rec * 1.8, 1), "royalty_split": "60% artist / 40% label + touring/merch"}]}
 
-    # Safe zone corridor is typically 1.5x to 4.2x replay ratio
-    is_safe = (1.4 <= ratio <= 4.5)
-    organic_confidence = 94.0 if is_safe else 62.0
-
-    peers = [
-        {"name": artist_data.get("name", "Artist"), "ratio": ratio, "organic": is_safe, "category": "Analyzed Artist"},
-        {"name": "Cohort Peer Alpha", "ratio": 1.9, "organic": True, "category": "Safe Corridor"},
-        {"name": "Cohort Peer Beta", "ratio": 2.1, "organic": True, "category": "Safe Corridor"},
-        {"name": "Cohort Peer Gamma", "ratio": 2.6, "organic": True, "category": "Safe Corridor"},
-        {"name": "Suspicious Bot Spiker", "ratio": 5.4, "organic": False, "category": "Suspicious Spiker"},
-        {"name": "Cohort Peer Epsilon", "ratio": 1.4, "organic": True, "category": "Safe Corridor"},
-        {"name": "Cohort Peer Zeta", "ratio": 3.1, "organic": True, "category": "Safe Corridor"}
-    ]
-
-    return {
-        "ratio": ratio,
-        "is_safe": is_safe,
-        "organic_confidence": organic_confidence,
-        "safe_zone_certified": is_safe,
-        "status_label": "Safe Zone Certified" if is_safe else "Under Review",
-        "peers": peers
-    }
-
-def calculate_ar_advance_valuation(listeners=75109, momentum=0.248, organic_ratio=3.42, catalog_size=6):
-    """
-    Calculates fair recoupable A&R advance offer and projected recoupment period.
-    Matches the prompt's $3,750 (+18.0% A&R Valuation) benchmark.
-    Formula:
-    Base = Listeners * $0.0035/stream * (Replay Ratio * 0.12) * Catalog Multiple
-    Risk Discount applied if organic ratio < 1.5 or > 4.5
-    """
-    base_annual_streams = listeners * max(organic_ratio, 1.2) * 12 * 0.25
-    gross_revenue = base_annual_streams * 0.0032  # Net DSP payout per stream (~$0.0032)
-    # 50/50 net profit share advance estimate with catalog factor
-    cat_factor = min(2.0, 0.8 + 0.1 * catalog_size)
-    growth_multiplier = max(0.8, 1.0 + momentum)
-    
-    calculated_advance = round((gross_revenue * 0.18 * cat_factor * growth_multiplier) / 50.0) * 50
-    # Center realistically around prompt valuation
-    if 2500 <= calculated_advance <= 8000:
-        advance = calculated_advance
-    else:
-        advance = 3750
-
-    # Recoupment projection (months to recoup)
-    monthly_artist_share = max(100.0, (listeners * organic_ratio * 0.0032 * 0.5))
-    recoup_months = round(advance / monthly_artist_share, 1)
-
-    return {
-        "recommended_advance": advance,
-        "formatted_advance": f"${advance:,.0f}",
-        "recoupment_months": recoup_months,
-        "valuation_trend": "+18.0%",
-        "suggested_deal": "Single Track Master Licensing (50/50 Net) with 1-Year Option",
-        "deal_options": [
-            {"type": "Distribution Only (85/15)", "advance": 0, "recoup_months": 0, "royalty_split": "85% Artist / 15% Label"},
-            {"type": "Master Licensing (50/50)", "advance": advance, "recoup_months": recoup_months, "royalty_split": "50% Artist / 50% Label (Recommended)"},
-            {"type": "360 Talent Partnership", "advance": round(advance * 2.2 / 100) * 100, "recoup_months": round(recoup_months * 1.8, 1), "royalty_split": "60% Artist / 40% Label + Touring/Merch"}
-        ]
-    }
-
+# ---------------------------------------------------------------------------------------------------------------------------------------------
+# ILLUSTRATIVE SAMPLE FIXTURES: fixed numbers, NOT computed from audio. api.dossier only returns them for demo artists, flagged illustrative.
+# ---------------------------------------------------------------------------------------------------------------------------------------------
 def get_crepe_pitch_accuracy():
     """
     CREPE f0 Pitch Accuracy (±20 Cents Threshold).
-    Exact data matching prompt specification:
+    Fixed sample values
     88.5% of sustained voiced phonemes sit within ±20 cents window.
     Intonation score: 0.84 / 1.00
     Cent distribution: -50c (1.5%), -40c (1.4%), -30c (3%), -20c (6.1%), -10c (11.6%),
@@ -378,3 +259,15 @@ def get_notable_collaborations():
             "notes": "Viral regional cypher bridging Kenya and Tanzania underground hip-hop."
         }
     ]
+
+
+def _sample_kpis():
+    row = lambda v, f, delta, label, status, dsp: {"value": v, "formatted": f, "delta": delta, "velocity_label": label, "status": status, "dsp": dsp, "obs_date": "sample"}
+    return {"monthly_listeners": row(62000, "62,000", "+24.8%", "MoM velocity", "Sample", "sample"), "follower_growth_rate": row(63.6, "+63.6%", "+63.6%", "90D pace", "Sample", "sample"),
+            "engagement_score": row(94.2, "94.2", "+14.6%", "Catalog depth", "Sample", "sample"), "viral_hit_probability": row(84.5, "84.5%", "+31.2%", "Sample model", "Sample", "sample"),
+            "regional_reach": row("Kenya hub", "Kenya hub", "+28.4%", "Cross-border index", "Sample", "sample"), "artistic_value_aav": row(78.6, "78.6", "+12.4%", "Catalog trajectory", "Sample", "sample"),
+            "organic_integrity": row(94.0, "94.0%", "+8.5%", "Sample corridor", "Sample", "sample"), "recommended_advance": row(3750, "$3,750", "+18.0%", "Scenario", "Sample", "sample")}
+
+def demo_fixtures():
+    return {"kpis": _sample_kpis(), "crepe": get_crepe_pitch_accuracy(), "tessitura": get_vocal_tessitura(), "timbre": get_vocal_timbre_audit(),
+            "stems": get_stem_occupancy_and_vernacular(), "collaborations": get_notable_collaborations()}

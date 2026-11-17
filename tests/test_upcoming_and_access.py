@@ -3,14 +3,15 @@ from cryptography.fernet import Fernet
 from msanii import create_app
 from msanii.db import db
 from msanii import ml
+from . import pgsupport
 
 class TestUpcomingAndAccess(unittest.TestCase):
     def setUp(self):
-        t = tempfile.mkdtemp()
+        t = tempfile.mkdtemp(); pgsupport.prepare()
         self.app = create_app({
             "TESTING": True, "DB": f"{t}/t.db", "UPLOAD_DIR": f"{t}/up",
             "FERNET_KEY": Fernet.generate_key(), "ORIGINS": ["http://localhost:5173"],
-            "SECURE_COOKIES": False, "RATE_GLOBAL": 10000, "SEED_OWNER": False
+            "SECURE_COOKIES": False, "RATE_GLOBAL": 10000
         })
         self.ctx = self.app.app_context()
         self.ctx.push()
@@ -53,19 +54,35 @@ class TestUpcomingAndAccess(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record["status"], "pending")
 
-        # Approve via token link
-        token = record["token"]
-        approve_res = client.get(f"/api/auth/approve-access?token={token}&action=approve")
-        self.assertEqual(approve_res.status_code, 200)
+        # The old one-click e-mail link must be gone: approval can no longer be triggered by a GET (scanners, previews, forwarded mail)
+        self.assertEqual(client.get("/api/auth/approve-access?token=x&action=approve").status_code, 404)
+        self.assertIsNone(d.execute("SELECT 1 FROM users WHERE email=?", (req_payload["email"],)).fetchone())
 
-        # Verify user account created
+        # Tokens are not stored in the clear
+        self.assertEqual(len(record["token"]), 64)
+
+        # Same reply for an unknown, a pending and a registered address (no account enumeration); invalid addresses are rejected
+        again = client.post("/api/auth/request-access", json=req_payload)
+        self.assertEqual((again.status_code, again.json["message"]), (201, res.json["message"]))
+        self.assertEqual(d.execute("SELECT COUNT(*) FROM access_requests WHERE email=?", (req_payload["email"],)).fetchone()[0], 1)
+        bad = client.post("/api/auth/request-access", json={**req_payload, "email": "<img src=x onerror=alert(1)>@x.io"})
+        self.assertEqual(bad.status_code, 400)
+
+        # Admin approves inside the app; the applicant gets a single-use invite and chooses their own password (none is ever generated)
+        from msanii.security import hash_pw
+        d.execute("INSERT INTO users(email,pw_hash,role,created_at) VALUES(?,?,?,?)", ("boss@test.com", hash_pw("AdminPass123!"), "admin", time.time())); d.commit()
+        adm = self.app.test_client(); lr = adm.post("/api/auth/login", json={"email": "boss@test.com", "password": "AdminPass123!"}); csrf = lr.json["csrf"]
+        listing = adm.get("/api/auth/access-requests").json["requests"]
+        self.assertTrue(all("token" not in r for r in listing))
+        rid = [r for r in listing if r["email"] == req_payload["email"]][0]["id"]
+        ap = adm.post(f"/api/auth/access-requests/{rid}/approve", headers={"X-CSRF-Token": csrf})
+        self.assertEqual(ap.status_code, 200); self.assertNotIn("temp_password", ap.json); inv = ap.json["invite_token"]
+        self.assertEqual(adm.post(f"/api/auth/access-requests/{rid}/approve", headers={"X-CSRF-Token": csrf}).status_code, 400)      # not twice
+        acc = client.post("/api/auth/accept-invite", json={"token": inv, "password": "MyOwnPassw0rd"}); self.assertEqual(acc.status_code, 201)
         user = d.execute("SELECT * FROM users WHERE email=?", (req_payload["email"],)).fetchone()
-        self.assertIsNotNone(user)
         self.assertEqual(user["role"], "reviewer")
-
-        # Verify request updated
-        updated_rec = d.execute("SELECT * FROM access_requests WHERE token=?", (token,)).fetchone()
-        self.assertEqual(updated_rec["status"], "approved")
+        self.assertEqual(client.post("/api/auth/accept-invite", json={"token": inv, "password": "MyOwnPassw0rd"}).status_code, 400)  # single use
+        self.assertEqual(d.execute("SELECT status FROM access_requests WHERE id=?", (rid,)).fetchone()["status"], "approved")
 
     def test_acoustic_forensic_models(self):
         crepe = ml.get_crepe_pitch_accuracy()
@@ -87,8 +104,10 @@ class TestUpcomingAndAccess(unittest.TestCase):
         self.assertEqual(len(stems["stems"]), 4)
         self.assertEqual(stems["stems"][0]["occupancy"], 82)
 
-        advance = ml.calculate_ar_advance_valuation(75109, 0.248)
-        self.assertEqual(advance["recommended_advance"], 3750)
+        # The advance is computed from its inputs (no constant fallback) and moves with them
+        advs = [ml.calculate_ar_advance_valuation(n, 0.1)["recommended_advance"] for n in (2000, 20000, 75109, 400000)]
+        self.assertEqual(advs, sorted(advs)); self.assertEqual(len(set(advs)), 4)
+        self.assertIsNone(ml.calculate_ar_advance_valuation(None)); self.assertTrue(ml.calculate_ar_advance_valuation(75109)["is_estimate"])
 
     def test_admin_access_requests_and_model_retrain(self):
         client = self.app.test_client()
@@ -100,7 +119,7 @@ class TestUpcomingAndAccess(unittest.TestCase):
                       ("admin@test.com", hash_pw("AdminPass123!"), "admin", time.time()))
             # Seed an artist for lab-default
             d.execute("INSERT INTO artists(name,country,city,begin_year,stage,first_seen) VALUES(?,?,?,?,?,?)",
-                      ("Juliani", "KE", "Nairobi", 2023, "Emerging Breakout", time.time()))
+                      ("Test Artist", "KE", "Nairobi", 2023, "Emerging Breakout", time.time()))
             d.commit()
 
         # Login as admin
@@ -111,15 +130,17 @@ class TestUpcomingAndAccess(unittest.TestCase):
         # 1. Test /api/artists/lab-default
         lab_res = client.get("/api/artists/lab-default")
         self.assertEqual(lab_res.status_code, 200)
-        self.assertEqual(lab_res.json["artist"]["name"], "Juliani")
+        self.assertEqual(lab_res.json["artist"]["name"], "Test Artist")
         self.assertIn("acoustic_analytics", lab_res.json)
-        self.assertEqual(lab_res.json["acoustic_analytics"]["kpis"]["recommended_advance"]["value"], 3750)
+        an = lab_res.json["acoustic_analytics"]
+        self.assertFalse(an["illustrative"])                                            # a real (non-demo) artist never receives sample visuals
+        for k in ("kpis", "crepe", "tessitura", "timbre", "stems", "collaborations"): self.assertNotIn(k, an)
+        self.assertEqual(an["observed"], []); self.assertIsNone(an["ar_valuation"]); self.assertEqual(an["forecast"], [])
 
         # 2. Test /api/models/retrain
         retrain_res = client.post("/api/models/retrain", headers={"X-CSRF-Token": csrf})
-        self.assertEqual(retrain_res.status_code, 200)
-        self.assertTrue(retrain_res.json["ok"])
-        self.assertIn("Breakout Probability", retrain_res.json["message"])
+        self.assertEqual(retrain_res.status_code, 501)                                  # nothing to retrain: never report a fake success
+        self.assertFalse(retrain_res.json["ok"]); self.assertFalse(retrain_res.json["trained"])
 
         # 3. Test /api/providers/<name>/tuning
         tune_res = client.put(
@@ -153,4 +174,4 @@ class TestUpcomingAndAccess(unittest.TestCase):
         appr_res = client.post(f"/api/auth/access-requests/{req_id}/approve", headers={"X-CSRF-Token": csrf})
         self.assertEqual(appr_res.status_code, 200)
         self.assertTrue(appr_res.json["ok"])
-        self.assertIn("temp_password", appr_res.json)
+        self.assertNotIn("temp_password", appr_res.json); self.assertIn("invite_token", appr_res.json)

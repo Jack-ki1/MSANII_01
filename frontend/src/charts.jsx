@@ -292,7 +292,7 @@ export function FanRetentionCohort() {
 
 export function CorridorScatter({ peers }) {
   const list = peers || [
-    { name: "Juliani", ratio: 3.42, safe: true },
+    { name: "Sample artist", ratio: 3.42, safe: true },
     { name: "Peer Alpha", ratio: 1.9, safe: true },
     { name: "Peer Beta", ratio: 2.1, safe: true },
     { name: "Peer Gamma", ratio: 2.6, safe: true },
@@ -303,8 +303,8 @@ export function CorridorScatter({ peers }) {
   return (
     <div>
       <div className="row sp" style={{ marginBottom: 6 }}>
-        <span className="sm">Organic Safe Zone: <b>1.4x – 4.2x</b> Stream-to-Follower Replay Ratio</span>
-        <Tag c="gn">Safe Zone Certified</Tag>
+        <span className="sm">Illustrative corridor: <b>1.4x – 4.5x</b> plays per listener (heuristic, uncalibrated)</span>
+        <Tag c="gn">Sample data</Tag>
       </div>
       <div className="tw">
         <table>
@@ -318,12 +318,12 @@ export function CorridorScatter({ peers }) {
           </thead>
           <tbody>
             {list.map((p, i) => (
-              <tr key={i} style={p.name.includes("Juliani") ? { background: "var(--sb)" } : {}}>
+              <tr key={i} style={p.name.includes("Sample artist") ? { background: "var(--sb)" } : {}}>
                 <td><b>{p.name}</b></td>
                 <td><b>{p.ratio}x</b></td>
                 <td>
                   <Tag c={p.safe ? "gn" : "rd"}>
-                    {p.safe ? "Safe Zone Certified" : "Flagged Suspicious"}
+                    {p.safe ? "Inside corridor" : "Outside corridor"}
                   </Tag>
                 </td>
                 <td className="sm mu">

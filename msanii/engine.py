@@ -98,7 +98,7 @@ def generate_reviews():
     made = 0
     for aid in ids:
         for kind, days in kinds:
-            last = d.execute("SELECT MAX(created) c, SUM(done=0) o FROM tasks WHERE artist_id=? AND kind=?", (aid, kind)).fetchone()
+            last = d.execute("SELECT MAX(created) c, COALESCE(SUM(CASE WHEN done=0 THEN 1 ELSE 0 END),0) o FROM tasks WHERE artist_id=? AND kind=?", (aid, kind)).fetchone()
             if (last["o"] or 0) == 0 and (last["c"] is None or now - last["c"] >= days * 86400):
                 d.execute("INSERT INTO tasks(artist_id,kind,created) VALUES(?,?,?)", (aid, kind, now)); made += 1
     d.commit(); return made
@@ -140,11 +140,13 @@ def flags(aid):
     return out
 
 def evidence(aid):
-    d = db(); r = d.execute("SELECT COUNT(*) n,MIN(ts) a,MAX(ts) b,COUNT(DISTINCT metric) m FROM observations WHERE artist_id=?", (aid,)).fetchone()
+    d = db(); r = d.execute("SELECT COUNT(*) n,MIN(ts) a,MAX(ts) b FROM observations WHERE artist_id=?", (aid,)).fetchone()
     span = (r["b"] - r["a"]) / 86400 if r["n"] else 0
+    # a metric only counts as evidence once it has been observed at least twice: a single snapshot says nothing about a trend
+    m = d.execute("SELECT COUNT(*) FROM (SELECT metric FROM observations WHERE artist_id=? GROUP BY metric HAVING COUNT(*)>=2) t", (aid,)).fetchone()[0]
     rv = d.execute("SELECT COUNT(*) FROM reviews WHERE artist_id=?", (aid,)).fetchone()[0] > 0
     ms = d.execute("SELECT COUNT(*) FROM measurements WHERE artist_id=?", (aid,)).fetchone()[0] > 0
-    return round(0.35 * min(span / 90, 1) + 0.25 * min(r["m"] / 3, 1) + 0.2 * rv + 0.2 * ms, 2)
+    return round(0.35 * min(span / 90, 1) + 0.25 * min(m / 3, 1) + 0.2 * rv + 0.2 * ms, 2)
 
 def avm(aid):
     S = [json.loads(r["scores"]) for r in db().execute("SELECT scores FROM reviews WHERE artist_id=?", (aid,))]; human = {}
@@ -160,7 +162,7 @@ def assess(aid):
     q = round(sum(W[k] * v for k, v in hv.items()) / wt, 1) if hv and wt else None
     m = main_metric(aid); gr = growth(aid, m) if m else None; g = gr["pct"] if gr else None; fl = flags(aid); ev = evidence(aid)
     
-    # Real Machine Learning Breakout Probability Model
+    # Heuristic breakout score (hand-weighted logistic, not a fitted model; see ml.py)
     series = {}
     for r in d.execute("SELECT metric,ts,value FROM observations WHERE artist_id=? ORDER BY ts", (aid,)):
         series.setdefault(r["metric"], []).append([r["ts"], r["value"]])
@@ -171,9 +173,9 @@ def assess(aid):
         tier = "MORE EVIDENCE"
     elif any(f["confidence"] >= T["flag_confidence"] for f in fl):
         tier = "WATCH"
-    elif (g is not None and q >= T["pursue_quality"] and g > T["pursue_growth"]) or breakout_pred["breakout_probability"] >= 0.75:
-        tier = "PURSUE"
-    elif q >= T["meet_quality"] or (g is not None and g > T["meet_growth"]) or breakout_pred["breakout_probability"] >= 0.55:
+    elif g is not None and ((q >= T["pursue_quality"] and g > T["pursue_growth"]) or ((breakout_pred["breakout_probability"] or 0) >= 0.75 and q >= T["meet_quality"])):
+        tier = "PURSUE"          # PURSUE always needs real growth evidence; the heuristic score alone can never promote an artist
+    elif q >= T["meet_quality"] or (g is not None and g > T["meet_growth"]) or (breakout_pred["breakout_probability"] or 0) >= 0.55:
         tier = "MEET"
     else:
         tier = "WATCH"
@@ -196,33 +198,20 @@ def explain(a, s):
     if not any(m.startswith("ugc") for m in s["metrics"]): miss.append("UGC data (approved provider or manual import)")
     why = (f"Evidence confidence {s['evidence']:.0%} and artistic score {s['artistic'] if s['artistic'] is not None else 'n/a'}: not enough to judge."
            if s["tier"] == "MORE EVIDENCE" else
-           f"Artistic score {s['artistic']} (human review) with 30-day momentum " + (f"{s['momentum']:+.0%} over {s['growth']['span_days']} days" if s["momentum"] is not None else "unknown") + f" [ML Breakout: {s.get('breakout_prediction', {}).get('prob_pct', 84.5)}%].")
+           f"Artistic score {s['artistic']} (human review) with 30-day momentum " + (f"{s['momentum']:+.0%} over {s['growth']['span_days']} days" if s["momentum"] is not None else "unknown") + (f" Heuristic breakout score {s['breakout_prediction']['prob_pct']}% (uncalibrated)." if s.get("breakout_prediction", {}).get("prob_pct") is not None else " Breakout score unavailable: not enough audience history."))
     return {"why": why, "distinctive": "Recorded genres: " + (", ".join(json.loads(a["genres"])) or "none") + ". Distinctiveness needs human judgement.",
             "opportunities": "Regional base: " + (a["country"] or "unknown") + ". Cross-border interest can be judged once UGC country data is imported.",
             "risks": [f["title"] for f in s["flags"]] or ["No flags on the available signals"], "missing": miss, "next": NEXT[s["tier"]]}
 
 def model_status():
+    """What the platform actually has. There is no trained model: no outcome labels are stored, so nothing can be fitted or scored for accuracy."""
     T = get_setting("thresholds")
-    n = db().execute("SELECT COUNT(*) FROM (SELECT artist_id FROM observations GROUP BY artist_id HAVING MAX(ts)-MIN(ts)>=?)", (60 * 86400,)).fetchone()[0]
-    trained = bool(n >= T["min_labelled"])
-    return {
-        "trained": trained,
-        "labelled_windows": n,
-        "required": T["min_labelled"],
-        "accuracy": "91.4%",
-        "f1_score": 0.892,
-        "models": [
-            "Upcoming Artist Breakout Probability Model (Calibrated Sigmoid)",
-            "Time-Series Stream Trajectory Forecaster (90D Horizon)",
-            "Forensic Organic Integrity & Bot Detection Model",
-            "A&R Deal Valuation & Advance Recoupment Engine",
-            "AVM 4-Pillar Acoustic Composite"
-        ],
-        "reason": f"{n} of {T['min_labelled']} labelled windows collected. " + (
-            "Supervised neural weights fully fitted." if trained
-            else f"Calibrated prior models active. Full automated weight re-fitting requires {T['min_labelled']} labelled observation windows."
-        )
-    }
+    n = db().execute("SELECT COUNT(*) FROM (SELECT artist_id FROM observations GROUP BY artist_id HAVING MAX(ts)-MIN(ts)>=?) t", (60 * 86400,)).fetchone()[0]
+    return {"trained": False, "labelled_windows": 0, "artists_with_60d_history": n, "required": T["min_labelled"], "accuracy": None, "f1_score": None,
+            "models": ["Breakout score: hand-weighted logistic heuristic (uncalibrated)", "Trajectory: log-linear trend with 95% prediction interval",
+                       "Organic corridor: Last.fm plays-per-listener heuristic", "Advance: scenario calculator with explicit assumptions"],
+            "reason": "No outcome labels exist yet (e.g. which artists later broke out), so no model is trained and no accuracy can be reported. "
+                      f"{n} artists have 60+ days of audience history; defining a label and collecting outcomes is the prerequisite for fitting."}
 
 # ---------------- audio measurement (optional dependency: librosa) ----------------
 KMAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]; KMIN = [6.33, 2.68, 3.52, 5.38, 2.6, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]

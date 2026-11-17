@@ -1,7 +1,7 @@
 import os, io, sys, csv, json, time, uuid, shutil, hashlib
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, g, current_app, send_file
-from .db import db, audit, verify_audit
+from .db import db, audit, verify_audit, is_pg
 from .security import (ApiError, body, field, require, hash_pw, check_pw, pw_ok, tok, sha, start_session, limited, ip, enc, dec, totp_ok,
                        new_totp_secret, SID, SESSION_TTL, EMAIL, DUMMY, ROLES, safe_url)
 from .providers import REGISTRY, CTRY, listing, build, creds, ProviderError
@@ -27,22 +27,22 @@ def card(r):
     lv = d.execute("SELECT value FROM observations WHERE artist_id=? AND metric=? ORDER BY ts DESC LIMIT 1", (aid, m)).fetchone() if m else None
     tr = d.execute("SELECT title,preview_url,cover_url FROM tracks WHERE artist_id=? ORDER BY (preview_url IS NULL), COALESCE(popularity,0) DESC LIMIT 1", (aid,)).fetchone()
     
-    tenure = ml.calculate_tenure(r["begin_year"], r["first_seen"])
-    is_up = tenure <= 5.0
+    tenure = ml.calculate_tenure(r["begin_year"], r["first_seen"])      # None when the career start year is unknown
+    is_up = None if tenure is None else tenure <= ml.UPCOMING_YEARS
     series = {}
     if m:
         rows = d.execute("SELECT ts,value FROM observations WHERE artist_id=? AND metric=? ORDER BY ts", (aid, m)).fetchall()
         series[m] = [[row["ts"], row["value"]] for row in rows]
-    breakout = ml.predict_breakout_probability(dict(r), series, {"momentum": gr["pct"] if gr else 0.15})
+    breakout = ml.predict_breakout_probability(dict(r), series, {"momentum": gr["pct"] if gr else None})
     
     return {"id": aid, "name": r["name"], "country": r["country"], "city": r["city"], "genres": json.loads(r["genres"]),
-            "stage": r["stage"] or ("Early Debut" if tenure <= 2 else "Emerging Breakout" if tenure <= 4 else "Developing Talent"),
-            "begin_year": r["begin_year"], "tenure_years": tenure, "is_upcoming": is_up,
-            "breakout_prob": breakout["prob_pct"], "velocity_category": breakout["category"],
+            "stage": r["stage"] or (None if tenure is None else "Early Debut" if tenure <= 2 else "Emerging Breakout" if tenure <= 4 else "Developing Talent"),
+            "begin_year": r["begin_year"], "tenure_years": tenure, "is_upcoming": is_up, "career_start_known": tenure is not None,
+            "breakout_prob": breakout["prob_pct"], "velocity_category": breakout["category"], "breakout_insufficient_data": breakout["insufficient_data"],
             "is_new": r["first_seen"] > time.time() - 7 * 86400, "first_seen": r["first_seen"], "last_signal": r["last_signal"],
-            "momentum": gr["pct"] if gr else (breakout["velocity_mom"] / 100.0), "evidence": engine.evidence(aid),
+            "momentum": gr["pct"] if gr else None, "evidence": engine.evidence(aid),
             "demo": bool(json.loads(r["ids"]).get("demo")), "image_url": r["image_url"], "bio": (r["bio"] or "")[:220],
-            "audience": {"metric": m or "monthly_listeners", "value": lv[0] if lv else (75109 if r["name"] == "Juliani" else 35000)} if (lv or r["name"] == "Juliani") else None,
+            "audience": {"metric": m, "value": lv[0]} if lv else None,
             "tracks": d.execute("SELECT COUNT(*) FROM tracks WHERE artist_id=?", (aid,)).fetchone()[0],
             "top_track": dict(tr) if tr else None, "links": len(json.loads(r["links"] or "{}"))}
 
@@ -94,6 +94,11 @@ def accept_invite():
     d.execute("UPDATE invites SET used=1 WHERE id=?", (i["id"],)); d.commit(); audit("invite_accepted", {"email": i["email"]}); return jsonify(ok=True), 201
 
 # ---------------- access request workflow ----------------
+def _issue_invite(email, role, by):
+    t = tok()
+    db().execute("INSERT INTO invites(email,role,token_hash,expires_at,invited_by) VALUES(?,?,?,?,?)", (email, role, sha(t), time.time() + 72 * 3600, by))
+    return t
+
 @bp.post("/auth/request-access")
 def request_access():
     if limited(("req_acc", ip()), 5, 300):
@@ -101,112 +106,47 @@ def request_access():
     b = body()
     name = field(b, "full_name", mx=150)
     email = field(b, "email", mx=254).lower()
+    if not EMAIL.match(email): raise ApiError("invalid email")
     org = str(b.get("organization") or "").strip()[:150]
     role = str(b.get("role_title") or "").strip()[:100]
     region = str(b.get("region") or "").strip()[:100]
     notes = str(b.get("notes") or "").strip()[:2000]
-    
     d = db()
-    if d.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
-        raise ApiError("an account with this email already exists", 409)
-        
-    token = tok()
-    req_dict = {
-        "full_name": name, "email": email, "organization": org,
-        "role_title": role, "region": region, "notes": notes, "token": token
-    }
-    
-    d.execute(
-        "INSERT INTO access_requests(full_name, email, organization, role_title, region, notes, status, token, created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?)",
-        (name, email, org, role, region, notes, "pending", token, time.time())
-    )
+    # Same answer whether or not the address is already registered or already pending, so the form cannot be used to probe for accounts.
+    reply = jsonify(ok=True, message="Your access request has been sent to the administrators. If it is approved you will receive an e-mail with a link to set your password."), 201
+    if d.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone(): return reply
+    if d.execute("SELECT 1 FROM access_requests WHERE email=? AND status='pending'", (email,)).fetchone(): return reply
+    d.execute("INSERT INTO access_requests(full_name, email, organization, role_title, region, notes, status, token, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+              (name, email, org, role, region, notes, "pending", sha(tok()), time.time()))      # `token` is kept for schema compatibility; it is random, hashed and never used for approval
     d.commit()
-    
-    # Notify admin (kimothojackson1125@gmail.com)
-    mail.send_access_request_notification(req_dict)
+    mail.send_access_request_notification({"full_name": name, "email": email, "organization": org, "role_title": role, "region": region, "notes": notes})
     audit("access_requested", {"email": email, "name": name, "org": org})
-    
-    return jsonify(
-        ok=True,
-        message="Your access request has been transmitted to kimothojackson1125@gmail.com. Once approved, you will receive your login password and onboarding guidelines via email."
-    ), 201
-
-@bp.route("/auth/approve-access", methods=["GET", "POST"])
-def approve_access_link():
-    token = request.args.get("token") or (body().get("token") if request.is_json else None)
-    action = request.args.get("action", "approve").lower()
-    if not token:
-        raise ApiError("missing token", 400)
-        
-    d = db()
-    req_record = d.execute("SELECT * FROM access_requests WHERE token=?", (token,)).fetchone()
-    if not req_record:
-        raise ApiError("invalid or expired access request token", 404)
-        
-    if req_record["status"] != "pending":
-        return jsonify(ok=True, status=req_record["status"], message=f"This request has already been {req_record['status']}.")
-
-    if action == "reject":
-        d.execute("UPDATE access_requests SET status='rejected', reviewed_at=? WHERE id=?", (time.time(), req_record["id"]))
-        d.commit()
-        audit("access_rejected", {"email": req_record["email"]})
-        return "<h3>MSANII: Access Request Rejected</h3><p>The applicant request has been marked as rejected.</p>", 200
-        
-    temp_pw = f"Msanii{uuid.uuid4().hex[:6].capitalize()}!9"
-    pw_hashed = hash_pw(temp_pw)
-    role = "reviewer"
-    d.execute("INSERT INTO users(email, pw_hash, role, created_at) VALUES(?,?,?,?)",
-              (req_record["email"], pw_hashed, role, time.time()))
-    d.execute("UPDATE access_requests SET status='approved', reviewed_at=? WHERE id=?", (time.time(), req_record["id"]))
-    d.commit()
-    
-    mail.send_access_approved(req_record["email"], req_record["full_name"], temp_pw)
-    audit("access_approved", {"email": req_record["email"], "role": role})
-    
-    if request.method == "GET":
-        return (f"<html><body style='font-family:sans-serif;padding:40px;background:#0d1117;color:#e6edf3;'>"
-                f"<h2 style='color:#2ea043;'>MSANII Access Request Approved</h2>"
-                f"<p>User <b>{req_record['email']}</b> has been created.</p>"
-                f"<p>Temporary password generated: <code>{temp_pw}</code></p>"
-                f"<p>Onboarding guidelines dispatched to the applicant via email.</p>"
-                f"<br/><a style='color:#58a6ff;' href='/'>Open MSANII Platform</a>"
-                f"</body></html>"), 200
-                
-    return jsonify(ok=True, email=req_record["email"], temp_password=temp_pw, message="Access approved and credentials emailed.")
+    return reply
 
 @bp.get("/auth/access-requests")
 @require("admin")
 def list_access_requests():
-    d = db()
-    rows = d.execute("SELECT * FROM access_requests ORDER BY created_at DESC LIMIT 100").fetchall()
+    rows = db().execute("SELECT id,full_name,email,organization,role_title,region,notes,status,created_at,reviewed_at,reviewed_by FROM access_requests ORDER BY created_at DESC LIMIT 100").fetchall()
     return jsonify(requests=[dict(r) for r in rows])
 
 @bp.post("/auth/access-requests/<int:rid>/approve")
 @require("admin")
 def admin_approve_request(rid):
-    d = db()
-    r = d.execute("SELECT * FROM access_requests WHERE id=?", (rid,)).fetchone()
+    d = db(); r = d.execute("SELECT * FROM access_requests WHERE id=?", (rid,)).fetchone()
     if not r: raise ApiError("request not found", 404)
-    if r["status"] == "approved": raise ApiError("already approved", 400)
-    
-    temp_pw = f"Msanii{uuid.uuid4().hex[:6].capitalize()}!9"
-    d.execute("INSERT INTO users(email, pw_hash, role, created_at) VALUES(?,?,?,?)",
-              (r["email"], hash_pw(temp_pw), "reviewer", time.time()))
-    d.execute("UPDATE access_requests SET status='approved', reviewed_at=?, reviewed_by=? WHERE id=?",
-              (time.time(), g.user["id"], rid))
-    d.commit()
-    mail.send_access_approved(r["email"], r["full_name"], temp_pw)
-    audit("access_approved", {"email": r["email"]}, g.user["id"])
-    return jsonify(ok=True, email=r["email"], temp_password=temp_pw)
+    if r["status"] != "pending": raise ApiError(f"request is already {r['status']}", 400)
+    if d.execute("SELECT 1 FROM users WHERE email=?", (r["email"],)).fetchone(): raise ApiError("an account with this email already exists", 409)
+    t = _issue_invite(r["email"], "reviewer", g.user["id"])
+    d.execute("UPDATE access_requests SET status='approved', reviewed_at=?, reviewed_by=? WHERE id=?", (time.time(), g.user["id"], rid)); d.commit()
+    audit("access_approved", {"email": r["email"], "role": "reviewer"}, g.user["id"])
+    if mail.configured() and mail.send_access_approved(r["email"], r["full_name"], t): return jsonify(ok=True, email=r["email"], emailed=True)
+    return jsonify(ok=True, email=r["email"], emailed=False, invite_token=t, expires_in_hours=72, note="Shown once. E-mail is not configured or failed; send the link yourself.")
 
 @bp.post("/auth/access-requests/<int:rid>/reject")
 @require("admin")
 def admin_reject_request(rid):
     d = db()
-    d.execute("UPDATE access_requests SET status='rejected', reviewed_at=?, reviewed_by=? WHERE id=?",
-              (time.time(), g.user["id"], rid))
-    d.commit()
+    d.execute("UPDATE access_requests SET status='rejected', reviewed_at=?, reviewed_by=? WHERE id=? AND status='pending'", (time.time(), g.user["id"], rid)); d.commit()
     audit("access_rejected", {"id": rid}, g.user["id"])
     return jsonify(ok=True)
 
@@ -322,8 +262,8 @@ def discovery_runs():
 @require()
 def lab_default():
     d = db()
-    jul = d.execute("SELECT id FROM artists WHERE name='Juliani' LIMIT 1").fetchone()
-    if jul: return dossier(jul["id"])
+    demo = d.execute("SELECT id FROM artists WHERE ids LIKE ? ORDER BY id LIMIT 1", ('%"demo"%',)).fetchone()
+    if demo: return dossier(demo["id"])
     any_a = d.execute("SELECT id FROM artists ORDER BY id ASC LIMIT 1").fetchone()
     if any_a: return dossier(any_a["id"])
     raise ApiError("no artists available", 404)
@@ -342,30 +282,24 @@ def dossier(aid):
     tracks = [dict(r) for r in d.execute("SELECT id,title,album,source,preview_url,cover_url,duration,popularity,release_date,url FROM tracks WHERE artist_id=? ORDER BY (preview_url IS NULL), COALESCE(popularity,0) DESC LIMIT 30", (aid,))]
     mrows = [media_row(r) for r in d.execute("SELECT m.*,u.email FROM media m LEFT JOIN users u ON u.id=m.user_id WHERE m.artist_id=? ORDER BY m.ts DESC LIMIT 50", (aid,))]
     
-    # Power BI Grade Acoustic & Velocity Analytics Telemetry
-    listeners_val = latest.get("monthly_listeners", {}).get("value") or (75109 if a["name"] == "Juliani" else 62000)
-    mom_val = s.get("momentum") or 0.248
-    
-    acoustic_analytics = {
-        "kpis": {
-            "monthly_listeners": {"value": int(listeners_val), "formatted": f"{int(listeners_val):,}", "delta": "+24.8%", "velocity_label": "MoM Velocity", "status": "Verified", "dsp": "Apple DSP", "obs_date": "11/14/2026"},
-            "follower_growth_rate": {"value": 63.6, "formatted": "+63.6%", "delta": "+63.6%", "velocity_label": "90D pace", "status": "Verified", "dsp": "Apple DSP", "obs_date": "11/14/2026"},
-            "engagement_score": {"value": 94.2, "formatted": "94.2", "delta": "+14.6%", "velocity_label": "Catalog Depth", "status": "Est", "dsp": "Cross-DSP DSP", "obs_date": "11/14/2026"},
-            "viral_hit_probability": {"value": 84.5, "formatted": "84.5%", "delta": "+31.2%", "velocity_label": "TikTok/Reels Model", "status": "Verified", "dsp": "Breakout DSP", "obs_date": "11/14/2026"},
-            "regional_reach": {"value": "Kenya Hub", "formatted": "Kenya Hub", "delta": "+28.4%", "velocity_label": "Cross-border Index", "status": "Verified", "dsp": "Soundcharts DSP", "obs_date": "11/14/2026"},
-            "artistic_value_aav": {"value": 78.6, "formatted": "78.6", "delta": "+12.4%", "velocity_label": "Catalog Trajectory", "status": "Verified", "dsp": "AVM DSP", "obs_date": "11/14/2026"},
-            "organic_integrity": {"value": 94.0, "formatted": "94.0%", "delta": "+8.5%", "velocity_label": "Safe Zone Certified", "status": "Verified", "dsp": "Forensic DSP", "obs_date": "11/14/2026"},
-            "recommended_advance": {"value": 3750, "formatted": "$3,750", "delta": "+18.0%", "velocity_label": "A&R Valuation", "status": "Est", "dsp": "A&R DSP", "obs_date": "11/14/2026"}
-        },
-        "crepe": ml.get_crepe_pitch_accuracy(),
-        "tessitura": ml.get_vocal_tessitura(),
-        "timbre": ml.get_vocal_timbre_audit(),
-        "stems": ml.get_stem_occupancy_and_vernacular(),
-        "collaborations": ml.get_notable_collaborations(),
-        "organic": ml.evaluate_organic_integrity(dict(a), [{"metric": k, "value": v["value"]} for k, v in latest.items()]),
-        "ar_valuation": ml.calculate_ar_advance_valuation(listeners_val, mom_val),
-        "forecast": ml.forecast_trajectory(series.get(s["metric"], []))
-    }
+    # Analytics are built only from data the platform holds. Missing inputs stay None; nothing is estimated to fill a gap.
+    illustrative = bool(json.loads(a["ids"]).get("demo"))
+    obs_list = [{"metric": k, "value": v["value"]} for k, v in latest.items()]
+    organic = ml.evaluate_organic_integrity(dict(a), obs_list)
+    mk = s.get("metric"); main = latest.get(mk) if mk else None
+    listeners = (latest.get("monthly_listeners") or main or {}).get("value")
+    val = ml.calculate_ar_advance_valuation(listeners, s.get("momentum"), organic["ratio"], len(tracks))
+    stamp = lambda o: datetime.fromtimestamp(o["ts"], timezone.utc).strftime("%Y-%m-%d")
+    observed = []
+    if main: observed.append({"key": "audience", "label": f"Audience ({mk})", "value": f"{int(main['value']):,}", "note": f"{main['source']} on {stamp(main)}", "status": "Observed"})
+    if s.get("momentum") is not None and s.get("growth"): observed.append({"key": "momentum", "label": "Momentum", "value": f"{s['momentum']:+.1%}", "note": f"over {s['growth']['span_days']} days", "status": "Observed"})
+    if organic["ratio"] is not None: observed.append({"key": "organic", "label": "Last.fm plays per listener", "value": f"{organic['ratio']}", "note": organic["status_label"], "status": "Heuristic"})
+    if s.get("artistic") is not None: observed.append({"key": "artistic", "label": "Artistic score (human)", "value": f"{s['artistic']}", "note": f"{s['avm']['reviews']} review(s)", "status": "Human"})
+    bp = s["breakout_prediction"]
+    if bp["prob_pct"] is not None: observed.append({"key": "breakout", "label": "Breakout score", "value": f"{bp['prob_pct']}%", "note": "heuristic, uncalibrated", "status": "Heuristic"})
+    if val: observed.append({"key": "advance", "label": "Advance scenario", "value": val["formatted_advance"], "note": "assumption-driven, not a valuation", "status": "Scenario"})
+    acoustic_analytics = {"illustrative": illustrative, "observed": observed, "organic": organic, "ar_valuation": val, "forecast": ml.forecast_trajectory(series.get(mk, [])) if mk else []}
+    if illustrative: acoustic_analytics.update(ml.demo_fixtures())      # fictional sample visuals, only for demo artists
 
     return jsonify(artist={**card(a), **prof}, assessment=s, explanation=engine.explain(a, s), series=series, latest=latest, range_days=days, tracks=tracks, media=mrows,
                    acoustic_analytics=acoustic_analytics,
@@ -437,7 +371,7 @@ def bulk_obs(aid):
 def _store_media(aid, kind, title, url, path, digest, res):
     d = db(); mid = d.execute("INSERT INTO media(artist_id,kind,title,url,path,sha256,status,result,user_id,ts) VALUES(?,?,?,?,?,?,?,?,?,?)", (aid, kind, title, url, path, digest, res["status"], json.dumps(res), g.user["id"], time.time())).lastrowid
     for m in res.get("measurements", []):
-        d.execute("INSERT INTO measurements(artist_id,name,value,confidence,provenance,ts) VALUES(?,?,?,?,?,?)", (aid, m["name"], f"{m['value']} {m['unit']}".strip(), m["confidence"], json.dumps({"media_id": mid, "method": m["method"], "note": m["note"]}), time.time()))
+        d.execute("INSERT INTO measurements(artist_id,name,value,confidence,provenance,ts,media_id) VALUES(?,?,?,?,?,?,?)", (aid, m["name"], f"{m['value']} {m['unit']}".strip(), m["confidence"], json.dumps({"media_id": mid, "method": m["method"], "note": m["note"]}), time.time(), mid))
     d.commit(); return mid
 
 @bp.post("/artists/<int:aid>/media")
@@ -487,7 +421,7 @@ def media_delete(mid):
     if not r: raise ApiError("not found", 404)
     root = os.path.realpath(current_app.config["UPLOAD_DIR"])
     if r["path"] and os.path.realpath(r["path"]).startswith(root + os.sep) and os.path.exists(r["path"]): os.remove(r["path"])
-    db().execute("DELETE FROM measurements WHERE json_extract(provenance,'$.media_id')=?", (mid,)); db().execute("DELETE FROM media WHERE id=?", (mid,)); db().commit()
+    db().execute("DELETE FROM measurements WHERE media_id=?", (mid,)); db().execute("DELETE FROM media WHERE id=?", (mid,)); db().commit()
     audit("media_deleted", {"media": mid}, g.user["id"]); return jsonify(ok=True)
 
 # ---------------- recommend ----------------
@@ -507,15 +441,8 @@ def models(): return jsonify(engine.model_status())
 @bp.post("/models/retrain")
 @require("admin")
 def retrain_models():
-    # Retrain upcoming breakout ML classifiers and intonation weights
-    status = engine.model_status()
-    audit("models_retrained", {"models": status.get("models", [])}, g.user["id"])
-    return jsonify(
-        ok=True,
-        trained=True,
-        message="Machine Learning models retrained successfully: Breakout Probability (Sigmoid calibrated) and CREPE Intonation threshold synchronised.",
-        status=status
-    )
+    # There is nothing to retrain: no outcome labels are stored, so no model can be fitted. Say so instead of reporting a fake success.
+    return jsonify(ok=False, trained=False, error="Retraining is not available: the platform has no outcome labels yet, so no model is fitted.", status=engine.model_status()), 501
 
 @bp.post("/decisions")
 @require("reviewer")
@@ -659,5 +586,5 @@ def system():
     hb = d.execute("SELECT value FROM settings WHERE key='_heartbeat'").fetchone()
     try: import librosa; lib = True
     except ImportError: lib = False
-    return jsonify(version="0.4.0", python=sys.version.split()[0], db_bytes=os.path.getsize(current_app.config["DB"]), counts=counts, ffmpeg=bool(shutil.which("ffmpeg")), librosa=lib,
+    return jsonify(version="0.4.0", python=sys.version.split()[0], database="postgresql" if is_pg() else "sqlite", db_bytes=(None if is_pg() or not os.path.exists(current_app.config["DB"]) else os.path.getsize(current_app.config["DB"])), counts=counts, ffmpeg=bool(shutil.which("ffmpeg")), librosa=lib,
                    scheduler_heartbeat=float(hb["value"]) if hb else None, production=bool(current_app.config["SECURE_COOKIES"]), smtp=mail.configured(), region=engine.get_setting("workspace")["region"])

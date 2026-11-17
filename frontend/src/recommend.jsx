@@ -81,15 +81,15 @@ function DecisionForm({ item, onDone }) {
 }
 
 // Interactive Deal Advance & Recoupment Calculator
-function DealCalculator({ baseListeners = 75109 }) {
-  const [advance, setAdvance] = useState(3750);
+function DealCalculator({ baseListeners = 0 }) {
+  const [advance, setAdvance] = useState(0);
   const [dealType, setDealType] = useState("licensing");
   const [royaltyShare, setRoyaltyShare] = useState(70); // 70% artist / 30% label
-  const [streamGrowthMoM, setStreamGrowthMoM] = useState(24.8);
+  const [streamGrowthMoM, setStreamGrowthMoM] = useState(0);
 
   // Math model: Average DSP blend per stream in East Africa + Global Diaspora (~$0.0028)
   const ratePerStream = 0.0028;
-  const streamsPerListener = 3.42; // Organic repeat replay ratio
+  const streamsPerListener = 3.0; // ASSUMPTION: plays per listener per month (not measured)
   const monthlyStreams = baseListeners * streamsPerListener;
   const labelSharePct = (100 - royaltyShare) / 100;
   const monthlyLabelGross = monthlyStreams * ratePerStream * labelSharePct;
@@ -102,7 +102,7 @@ function DealCalculator({ baseListeners = 75109 }) {
   return (
     <Panel
       title="A&R Advance Valuation & Recoupment Simulator"
-      sub="Algorithmic modeling based on 75,109 monthly listeners, 3.42x stream repeat factor, and +24.8% MoM velocity."
+      sub={baseListeners ? `Scenario calculator, not a valuation. Inputs: ${baseListeners.toLocaleString()} listeners (latest observed for the top-ranked artist), 3 plays per listener per month (assumption), growth you enter.` : "Scenario calculator, not a valuation. No artist with an audience observation yet, so there is nothing to base it on."}
     >
       <div className="g4" style={{ marginBottom: 16 }}>
         <div>
@@ -222,9 +222,9 @@ function ScoutingMilestoneRoadmap() {
       title: "Audio Forensics & First Contact",
       status: "In Progress",
       items: [
-        "Run master audio files through Song Lab CREPE intonation filter (ensure ±20 cents accuracy >= 85%).",
-        "Perform Demucs stem separation to confirm vocal projection and dynamic range balance.",
-        "Verify 94.0% organic integrity corridor against DSP click-farming telemetry.",
+        "Run master audio files through Song Lab (tempo, key, loudness proxy, clipping check).",
+        "Listen for vocal projection and dynamic range balance; stem separation is not automated yet.",
+        "Check the audience data for anomalies (sudden steps, inconsistent platforms) before committing.",
         "A&R scout initial touchpoint with artist management in Nairobi / East Africa hub."
       ]
     },
@@ -235,7 +235,7 @@ function ScoutingMilestoneRoadmap() {
       items: [
         "Review songwriting split sheets and producer agreements for unreleased catalog.",
         "Launch TikTok & Reels sound snippet seeding campaign to confirm viral velocity (>2,000 creations).",
-        "Present initial Deal Architecture ($3,750 Advance, 70/30 Master Licensing, 8.4-month recoupment).",
+        "Present an initial deal structure built from the scenario calculator and your own assumptions.",
         "Conduct live acoustic showcase or studio session attendance."
       ]
     },
@@ -300,8 +300,8 @@ export function Recommend({ user, open }) {
     flags: r.integrity_flags,
     evidence: r.evidence,
     ex: r.explanation,
-    tenure: r.artist.tenure_years != null ? `${r.artist.tenure_years}y` : "<5y",
-    breakoutProb: r.artist.breakout_prob != null ? `${Math.round(r.artist.breakout_prob * 100)}%` : "84.5%"
+    tenure: r.artist.tenure_years != null ? `${r.artist.tenure_years}y` : "unknown",
+    breakoutProb: r.artist.breakout_prob != null ? `${Math.round(r.artist.breakout_prob)}%` : "n/a"
   }));
 
   const D = decs ? decs.decisions : [];
@@ -412,7 +412,7 @@ export function Recommend({ user, open }) {
       </div>
 
       {/* Interactive Deal Advance Calculator */}
-      <DealCalculator baseListeners={75109} />
+      <DealCalculator baseListeners={items.find((x) => x.audience)?.audience?.value || 0} />
 
       {/* Tier Breakdown and Scatter Plots */}
       <div className="g3">
@@ -556,7 +556,7 @@ export function Recommend({ user, open }) {
                       {pct(x.momentum)}
                     </td>
                     <td>
-                      <Tag c={x.flags ? "rd" : "gn"}>{x.flags ? `${x.flags} Flag(s)` : "94.0% Safe"}</Tag>
+                      <Tag c={x.flags ? "rd" : "gn"}>{x.flags ? `${x.flags} Flag(s)` : "No flags"}</Tag>
                     </td>
                     <td>{Math.round(x.evidence * 100)}%</td>
                     <td onClick={(ev) => ev.stopPropagation()}>
@@ -605,7 +605,7 @@ export function Recommend({ user, open }) {
             </div>
             <div>
               <p><b>Scouting Risks:</b> {picked.ex.risks.join("; ")}.</p>
-              <p><b>Missing Data:</b> {picked.ex.missing.length ? picked.ex.missing.join("; ") : "Verified catalog"}.</p>
+              <p><b>Missing Data:</b> {picked.ex.missing.length ? picked.ex.missing.join("; ") : "none listed"}.</p>
               <p><b>Recommended Next Step:</b> {picked.ex.next}</p>
             </div>
           </div>

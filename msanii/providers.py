@@ -5,7 +5,7 @@ Rights & Registries, Live & Touring, Audio Forensics & AI, and Open Data.
 Provides full control, tuning (priority 1-10, rate limits, status toggles),
 encrypted credential storage, and live health statistics.
 """
-import re, time, json, requests
+import logging, re, time, json, requests
 from urllib.parse import quote, urlparse
 from flask import current_app
 from .db import db
@@ -57,7 +57,9 @@ class MusicBrainz(Provider):
         j = self.get("https://musicbrainz.org/ws/2/artist", params={"query": " AND ".join(t), "fmt": "json", "limit": limit}); time.sleep(1.1)
         out = []
         for a in j.get("artists", []):
-            by = ((a.get("life-span") or {}).get("begin") or "")[:4]
+            # MusicBrainz `life-span.begin` is the BIRTH date for a Person but the FORMATION date for a Group, so it only tells us when a
+            # career started for groups. For people we leave the start year unknown instead of treating a birth year as a debut year.
+            by = ((a.get("life-span") or {}).get("begin") or "")[:4] if a.get("type") == "Group" else ""
             tags = sorted(a.get("tags", []), key=lambda x: -x.get("count", 0))[:3]
             out.append({"name": a["name"], "country": a.get("country"), "city": (a.get("begin-area") or a.get("area") or {}).get("name"),
                         "genres": [x["name"] for x in tags], "ids": {"musicbrainz": a["id"]}, "begin_year": int(by) if by.isdigit() else None})
@@ -145,10 +147,10 @@ class LastFM(Provider):
     fields = ("api_key",)
     def search(self, q=None, country=None, limit=25, genre=None):
         if not q: return []
-        j = self.get("http://ws.audioscrobbler.com/2.0/", params={"method": "artist.search", "artist": q, "api_key": self.c["api_key"], "format": "json", "limit": limit})
+        j = self.get("https://ws.audioscrobbler.com/2.0/", params={"method": "artist.search", "artist": q, "api_key": self.c["api_key"], "format": "json", "limit": limit})
         return [{"name": a["name"], "genres": [], "ids": {"lastfm": a["name"]}} for a in (j.get("results", {}).get("artistmatches", {}).get("artist") or []) if a.get("name")]
     def signals(self, artist):
-        j = self.get("http://ws.audioscrobbler.com/2.0/", params={"method": "artist.getinfo", "artist": artist["name"], "api_key": self.c["api_key"], "format": "json"})
+        j = self.get("https://ws.audioscrobbler.com/2.0/", params={"method": "artist.getinfo", "artist": artist["name"], "api_key": self.c["api_key"], "format": "json"})
         st = (j.get("artist") or {}).get("stats") or {}
         out = []
         if st.get("listeners"): out.append(("lastfm_listeners", float(st["listeners"]), "lastfm:" + artist["name"]))
@@ -293,14 +295,14 @@ CATALOGUE = [
     ("Kilifi New Year Festival", "Live & Touring", "Manual import", "Boutique coastal alternative showcase lineup records.", "Intake audit", "https://kilifinewyear.com"),
 
     # 7. Audio Forensics & AI (8)
-    ("CREPE Pitch Tracker", "Audio Forensics & AI", "Fully implemented", "Deep convolutional neural network for f0 intonation and cent deviation.", "Local pure Python / ML model", "https://github.com/marl/crepe"),
-    ("Demucs v4 Stem Separator", "Audio Forensics & AI", "Fully implemented", "4-stem audio source separation (Vocals, Drums, Bass, Melodic).", "Local model / DSP", "https://github.com/facebookresearch/demucs"),
-    ("Essentia Audio Engine", "Audio Forensics & AI", "Fully implemented", "Psychoacoustic feature extractor for dynamic range and spectral contrast.", "Open-source audio DSP", "https://essentia.upf.edu"),
+    ("CREPE Pitch Tracker", "Audio Forensics & AI", "Planned", "Deep convolutional neural network for f0 intonation and cent deviation.", "Local pure Python / ML model", "https://github.com/marl/crepe"),
+    ("Demucs v4 Stem Separator", "Audio Forensics & AI", "Planned", "4-stem audio source separation (Vocals, Drums, Bass, Melodic).", "Local model / DSP", "https://github.com/facebookresearch/demucs"),
+    ("Essentia Audio Engine", "Audio Forensics & AI", "Planned", "Psychoacoustic feature extractor for dynamic range and spectral contrast.", "Open-source audio DSP", "https://essentia.upf.edu"),
     ("Librosa Audio DSP", "Audio Forensics & AI", "Fully implemented", "Chroma CQT key detection, beat tracking and tempo autocorrelation.", "Python audio library", "https://librosa.org"),
-    ("AcoustID Audio Fingerprinting", "Audio Forensics & AI", "Fully implemented", "Chromaprint acoustic fingerprint match against MusicBrainz.", "AcoustID API key", "https://acoustid.org"),
-    ("Aubio Pitch & Beat Engine", "Audio Forensics & AI", "Fully implemented", "Real-time onset and spectral pitch tracking.", "Aubio library", "https://aubio.org"),
+    ("AcoustID Audio Fingerprinting", "Audio Forensics & AI", "Planned", "Chromaprint acoustic fingerprint match against MusicBrainz.", "AcoustID API key", "https://acoustid.org"),
+    ("Aubio Pitch & Beat Engine", "Audio Forensics & AI", "Planned", "Real-time onset and spectral pitch tracking.", "Aubio library", "https://aubio.org"),
     ("PyIN Intonation Tracker", "Audio Forensics & AI", "Fully implemented", "Probabilistic YIN algorithm for vocal fundamental frequency.", "Librosa PyIN", "https://librosa.org"),
-    ("LUFS EBU R128 Metering", "Audio Forensics & AI", "Fully implemented", "Broadcast standard loudness and dynamic crest metering.", "Standard pure Python DSP", "https://tech.ebu.ch/loudness"),
+    ("LUFS EBU R128 Metering", "Audio Forensics & AI", "Planned", "Broadcast standard loudness and dynamic crest metering.", "Standard pure Python DSP", "https://tech.ebu.ch/loudness"),
 
     # 8. Open Data (7)
     ("Wikidata", "Open Data", "Planned", "Linked open data relations and creator entity graphs via SPARQL.", "Open SPARQL endpoint", "https://www.wikidata.org"),
@@ -319,6 +321,7 @@ for n, cat, st, note, lim, doc in CATALOGUE:
     if n not in REGISTRY:
         REGISTRY[n] = type(re.sub(r"\W", "", n) or "P", (Stub,), {"name": n, "category": cat, "status": st, "note": note, "limits": lim, "docs": doc, "fields": ()})
 
+log = logging.getLogger("msanii.providers")
 BUILDABLE = ("Fully implemented", "Implemented with credentials", "Partially implemented")
 
 def track(name, ok, msg=None):
@@ -327,14 +330,14 @@ def track(name, ok, msg=None):
         d.execute(
             "INSERT INTO provider_stats(provider,calls,errors,last_ok,last_error,last_error_at) "
             "VALUES(?,?,?,?,?,?) ON CONFLICT(provider) DO UPDATE SET "
-            "calls=calls+1, errors=errors+?, last_ok=COALESCE(?,last_ok), "
-            "last_error=COALESCE(?,last_error), last_error_at=COALESCE(?,last_error_at)",
+            "calls=provider_stats.calls+1, errors=provider_stats.errors+?, last_ok=COALESCE(?,provider_stats.last_ok), "      # qualified: unqualified names are ambiguous with `excluded` on PostgreSQL
+            "last_error=COALESCE(?,provider_stats.last_error), last_error_at=COALESCE(?,provider_stats.last_error_at)",
             (name, 1, 0 if ok else 1, now if ok else None, None if ok else (msg or "")[:200], None if ok else now,
              0 if ok else 1, now if ok else None, None if ok else (msg or "")[:200], None if ok else now)
         )
         d.commit()
     except Exception:
-        pass
+        log.warning("could not record provider stats for %s", name, exc_info=True)      # was silently swallowed, which hid a PostgreSQL error
 
 def creds(name):
     r = db().execute("SELECT ciphertext FROM credentials WHERE provider=?", (name,)).fetchone()

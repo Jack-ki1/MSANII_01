@@ -1,6 +1,5 @@
 """Upcoming artist demo dataset focusing strictly on artists with <= 5 years industry tenure.
-Includes authentic telemetry, rising velocity curves, multi-platform observations,
-audio measurement records, and verified collaboration references.
+All names, numbers and tracks are FICTIONAL SAMPLE DATA for trying the interface. Demo artists are flagged and never mixed with real data.
 """
 import json, time, random
 from .db import db
@@ -8,9 +7,9 @@ from .engine import restage
 
 # name, country, city, genres, begin_year, base_fans, monthly_growth, days_history, spike_multiplier, platforms, (ugc_videos, creators, top3_share, countries), tracks
 DEMO = [
-    ("Juliani", "KE", "Nairobi", ["Hip-Hop / Sheng", "Spoken Word", "Conscious Afro"], 2022, 62000, 0.248, 365, 0,
+    ("Wanjiru Echo", "KE", "Nairobi", ["Hip-Hop / Sheng", "Spoken Word", "Conscious Afro"], 2022, 62000, 0.248, 365, 0,
      [("lastfm_listeners", 2.8, 1.2), ("spotify_followers", 1.9, 1.3), ("deezer_fans", 1.1, 1.0)],
-     (2640, 940, 18, 5), ["Utawala", "Grassroots Session Live", "Rhythm of Rift", "Exponential Potential"]),
+     (2640, 940, 18, 5), ["Mtaa Kwa Mtaa", "Kesho Ni Yetu", "Sauti ya Pembe", "Mwanga Mpya"]),
      
     ("Baraka Mshana", "TZ", "Dar es Salaam", ["Singeli", "Bongo Flava"], 2022, 38000, 0.180, 240, 2.2,
      [("lastfm_listeners", 2.2, 0.8), ("yt_subscribers", 1.5, 1.1)],
@@ -50,7 +49,7 @@ def seed():
         ).lastrowid
         
         # Primary monthly listeners telemetry series (matching prompt's ~75,109 for top upcoming artist)
-        scale_base = 75109 if name == "Juliani" else base
+        scale_base = base
         series = [("monthly_listeners", 1.0, 1.0), ("deezer_fans", 0.65, 0.9)] + plats
         
         for metric, scale, gm in series:

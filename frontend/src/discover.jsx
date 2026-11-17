@@ -47,7 +47,7 @@ function ArtistCard({ a, open, url, toggle }) {
             )}
           </div>
           <div className="row" style={{ gap: 4 }}>
-            <Tag c="gn">⚡ {a.tenure_years ? `${a.tenure_years}y active` : "Upcoming"}</Tag>
+            <Tag c="gn">⚡ {a.tenure_years ? `${a.tenure_years}y active` : "start year unknown"}</Tag>
             <Tag c={cc}>Evidence {c}</Tag>
           </div>
         </div>
@@ -62,7 +62,7 @@ function ArtistCard({ a, open, url, toggle }) {
 
         <div className="chips">
           {a.genres.slice(0, 2).map((g) => <Tag key={g}>{g}</Tag>)}
-          <Tag c="bl">{a.velocity_category || "Fast Accelerator"}</Tag>
+          <Tag c="bl">{a.velocity_category || "Insufficient data"}</Tag>
           {a.breakout_prob != null && (
             <Tag c={a.breakout_prob >= 75 ? "gn" : "am"}>
               🎯 {a.breakout_prob}% Breakout
@@ -77,7 +77,7 @@ function ArtistCard({ a, open, url, toggle }) {
 
         <div className="stat">
           <div>
-            <b>{a.audience ? fmt(a.audience.value) : "75.1k"}</b>
+            <b>{a.audience ? fmt(a.audience.value) : "n/a"}</b>
             {a.audience ? ML[a.audience.metric] : "listeners"}
           </div>
           <div>
@@ -87,7 +87,7 @@ function ArtistCard({ a, open, url, toggle }) {
             MoM velocity
           </div>
           <div>
-            <b style={{ color: "var(--co)" }}>{a.breakout_prob ? `${a.breakout_prob}%` : "84.5%"}</b>
+            <b style={{ color: "var(--co)" }}>{a.breakout_prob != null ? `${a.breakout_prob}%` : "n/a"}</b>
             ML breakout
           </div>
           <div>
@@ -224,7 +224,7 @@ export function Discover({ user, meta, open }) {
 
   const kp = [
     ["Upcoming Artists", L.length, "Active <= 5 years in industry", PAL[0]],
-    ["High Breakout (>75%)", L.filter((a) => (a.breakout_prob || 0) >= 75).length, "ML prediction model", PAL[2]],
+    ["High Breakout (>75%)", L.filter((a) => (a.breakout_prob || 0) >= 75).length, "Heuristic score (uncalibrated)", PAL[2]],
     ["Rising Momentum", L.filter((a) => (a.momentum || 0) > 0.15).length, "MoM velocity > 15%", PAL[3]],
     ["Avg Evidence", L.length ? Math.round(avgOf(L.map((a) => a.evidence)) * 100) + "%" : "88%", "Confidence in signals", PAL[1]],
     ["With Analyzed Audio", L.filter((a) => a.tracks).length, "Song Lab & Stem ready", PAL[4]]
@@ -239,7 +239,7 @@ export function Discover({ user, meta, open }) {
         city: a.city,
         tenure_years: a.tenure_years,
         velocity_category: a.velocity_category,
-        breakout_probability: a.breakout_prob + "%",
+        breakout_probability: a.breakout_prob == null ? "" : a.breakout_prob + "%",
         genres: a.genres.join("; "),
         audience: a.audience?.value ?? "",
         momentum_mom: a.momentum ?? "",
@@ -412,17 +412,17 @@ export function Discover({ user, meta, open }) {
                   </td>
                   <td>{cname(a.country)}</td>
                   <td>
-                    <Tag c="gn">⚡ {a.tenure_years ? `${a.tenure_years} yrs` : "Upcoming"}</Tag>
+                    <Tag c="gn">⚡ {a.tenure_years ? `${a.tenure_years} yrs` : "start year unknown"}</Tag>
                   </td>
                   <td>
-                    <Tag c="bl">{a.velocity_category || "Fast Accelerator"}</Tag>
+                    <Tag c="bl">{a.velocity_category || "Insufficient data"}</Tag>
                   </td>
                   <td>
-                    <b style={{ color: (a.breakout_prob || 84.5) >= 75 ? "var(--gn)" : "var(--co)" }}>
-                      🎯 {a.breakout_prob || 84.5}%
+                    <b style={{ color: (a.breakout_prob ?? 0) >= 75 ? "var(--gn)" : "var(--co)" }}>
+                      🎯 {a.breakout_prob != null ? `${a.breakout_prob}%` : "n/a"}
                     </b>
                   </td>
-                  <td>{a.audience ? fmt(a.audience.value) : "75.1k"}</td>
+                  <td>{a.audience ? fmt(a.audience.value) : "n/a"}</td>
                   <td className={(a.momentum || 0.248) > 0 ? "up" : "dw"}>
                     {pct(a.momentum != null ? a.momentum : 0.248)}
                   </td>

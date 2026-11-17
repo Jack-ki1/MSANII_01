@@ -153,23 +153,23 @@ export function Analyze({ id, user, onPickArtist }) {
               {a.name}
               {a.tenure_years != null && (
                 <span className="bdg" style={{ fontSize: 13, background: "rgba(16, 185, 129, 0.2)", color: "#10b981", border: "1px solid #10b981" }}>
-                  ⚡ Upcoming · {a.tenure_years}y
+                  {a.is_upcoming ? "⚡ Upcoming" : "Established"} · {a.tenure_years}y
                 </span>
               )}
             </h2>
             <div className="mu">
               {[a.city, cname(a.country)].filter(Boolean).join(", ")}
-              {a.begin_year ? ` · Career debut ${a.begin_year}` : ""} · {a.genres?.join(", ") || "Afropop / Urban"}
+              {a.begin_year ? ` · Career debut ${a.begin_year}` : ""} · {a.genres?.join(", ") || "genre not recorded"}
             </div>
             <div className="chips" style={{ marginTop: 6 }}>
-              <Tag>{a.stage || "Emerging Breakout"}</Tag>
+              {a.stage && <Tag>{a.stage}</Tag>}
               <Tag c={TC[A.tier]}>{A.tier}</Tag>
-              {A.breakout_prediction && (
-                <Tag c="gn">
-                  🎯 {Math.round(A.breakout_prediction.breakout_probability * 100)}% Breakout
+              {A.breakout_prediction && A.breakout_prediction.breakout_probability != null && (
+                <Tag c="gn" title="Hand-weighted heuristic score, not a calibrated probability">
+                  🎯 {Math.round(A.breakout_prediction.breakout_probability * 100)}% Breakout score
                 </Tag>
               )}
-              {a.demo && <Tag>Verified Upcoming Telemetry</Tag>}
+              {a.demo && <Tag c="am">Demo data · fictional</Tag>}
               <Tag>Evidence {Math.round(A.evidence * 100)}%</Tag>
             </div>
           </div>

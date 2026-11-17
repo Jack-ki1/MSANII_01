@@ -35,7 +35,7 @@ export function Login({ onIn, back }) {
             notes: f.notes
           }
         });
-        setOk(r.message || "Request transmitted to kimothojackson1125@gmail.com. Check your email for approval & guidelines.");
+        setOk(r.message || "Your request has been sent to the administrators. If approved you will receive an e-mail with a link to set your password.");
         setF({ ...f, password: "", notes: "" });
       } else if (mode === "invite") {
         await api("/auth/accept-invite", {
@@ -66,7 +66,7 @@ export function Login({ onIn, back }) {
       <div className="lp">
         <Logo light />
         <div>
-          <h1>Upcoming Artists. <em>Verified Data.</em></h1>
+          <h1>Upcoming Artists. <em>Evidence First.</em></h1>
           <p style={{ marginTop: 12, opacity: 0.92, maxWidth: 380 }}>
             The executive intelligence suite for discovering, analyzing, and recommending
             the next generation of musical talent within their first 5 years.
@@ -74,7 +74,7 @@ export function Login({ onIn, back }) {
           <div style={{ marginTop: 24, display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Tag c="gn">5-Year Upcoming Focus</Tag>
             <Tag c="bl">CREPE f0 Intonation</Tag>
-            <Tag c="am">Safe Zone Bot Detection</Tag>
+            <Tag c="am">Anomaly signals, not verdicts</Tag>
           </div>
         </div>
         <button className="btn gh" style={{ alignSelf: "flex-start" }} onClick={back}>
@@ -117,7 +117,7 @@ export function Login({ onIn, back }) {
           </h2>
           <p className="sm mu" style={{ marginBottom: 16 }}>
             {mode === "request"
-              ? "All access requests are reviewed directly by Jackson Kimotho (kimothojackson1125@gmail.com)."
+              ? "Access requests are reviewed by the platform administrators."
               : mode === "invite"
               ? "Enter your secure token and create your 10+ character password."
               : "Authorized executive & reviewer login."}

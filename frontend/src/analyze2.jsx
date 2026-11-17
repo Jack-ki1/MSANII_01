@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, API_BASE } from "./api";
 import { Tag } from "./ui";
+import { RealDossier, RealAnalytics } from "./real";
 import { Panel, Kpi, fd, fday, ML, AUDM, IMPORT, safe, avgOf, sliceDays, changeOver, steps, vals, lbls } from "./shared";
 import {
   LineChart, ColumnChart, Donut, Gauge, Heat, Radar, HBars, Scatter,
@@ -166,7 +167,7 @@ export function Trajectory({ d }) {
 }
 
 // ---------------- POWER BI GRADE ACOUSTIC & VELOCITY ANALYTICS DASHBOARD ----------------
-export function AcousticVelocityDashboard({ d }) {
+function AcousticVelocityDashboardSample({ d }) {
   const analytics = d.acoustic_analytics || {};
   const kpis = analytics.kpis || {};
   const crepe = analytics.crepe || {};
@@ -582,7 +583,7 @@ export function AcousticVelocityDashboard({ d }) {
 }
 
 // ---------------- MERGED EXECUTIVE DOSSIER ----------------
-export function MergedDossier({ d, can, reload, openSongLab }) {
+function MergedDossierSample({ d, can, reload, openSongLab }) {
   const a = d.artist;
   const A = d.assessment;
   const analytics = d.acoustic_analytics || {};
@@ -943,8 +944,8 @@ export function SongLab({ d, can, reload, onSwitchArtist, onAudioAnalyzed }) {
           <div style={{ marginTop: 16, borderTop: "1px solid var(--bd2)", paddingTop: 12 }}>
             <span className="sm mu">Quick Pre-loaded Track Samples:</span>
             <div className="chips" style={{ marginTop: 6 }}>
-              <button type="button" className="chip" onClick={() => onSwitchArtist && onSwitchArtist("Juliani")}>
-                ▶ Juliani – Utawala
+              <button type="button" className="chip" onClick={() => onSwitchArtist && onSwitchArtist("Wanjiru Echo")}>
+                ▶ Wanjiru Echo (demo artist)
               </button>
               <button type="button" className="chip" onClick={() => onSwitchArtist && onSwitchArtist("Nairobi Acoustic Collective")}>
                 ▶ Grassroots Session Live
@@ -980,4 +981,20 @@ export function SongLab({ d, can, reload, onSwitchArtist, onAudioAnalyzed }) {
       )}
     </div>
   );
+}
+
+
+// ---- Real artists get measured data only; demo artists get the illustrative sample dashboards behind a clear banner ----
+function SampleBanner() {
+  return <div className="bn" style={{ borderColor: "#f5a524" }}><b>Illustrative sample data.</b> This artist is fictional demo data. The charts below are fixed sample visuals to show the interface: they were not measured and must not be used for decisions.</div>;
+}
+
+export function AcousticVelocityDashboard({ d }) {
+  if (!d.acoustic_analytics?.illustrative) return <RealAnalytics d={d} />;
+  return <div><SampleBanner /><AcousticVelocityDashboardSample d={d} /></div>;
+}
+
+export function MergedDossier(props) {
+  if (!props.d.acoustic_analytics?.illustrative) return <RealDossier d={props.d} openSongLab={props.openSongLab} />;
+  return <div><SampleBanner /><MergedDossierSample {...props} /></div>;
 }

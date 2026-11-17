@@ -623,7 +623,7 @@ function Scoring({ cfg, reload }) {
     setRetrainMsg("");
     try {
       const res = await api("/models/retrain", { method: "POST" });
-      setRetrainMsg(res.message);
+      setRetrainMsg(res.message || "Done.");
       reloadModels();
     } catch (err) {
       setRetrainMsg(err.message);
@@ -718,10 +718,10 @@ function Scoring({ cfg, reload }) {
           <div className="pn" style={{ margin: 0 }}>
             <span className="sm mu">A&amp;R Advance Valuation Formula</span>
             <div style={{ fontSize: 20, fontWeight: 700, color: "#7c5cff", margin: "6px 0" }}>
-              $3,750 Base Benchmark
+              Scenario calculator
             </div>
             <p className="sm mu">
-              Calibrated to 8.4-month recoupment on 75k monthly listeners with 24.8% MoM lift.
+              Computed from observed listeners and stated assumptions (plays per listener, payout per stream, label share). It is a negotiating scenario, not a valuation.
             </p>
           </div>
         </div>
@@ -750,11 +750,11 @@ function Scoring({ cfg, reload }) {
               </thead>
               <tbody>
                 {[
-                  ["Breakout Probability ML", "Calibrated Sigmoid Regressor", "active"],
-                  ["CREPE f0 Pitch Accuracy", "Pretrained Neural Intonation", "active"],
-                  ["4-Stem Audio Separation", "Demucs / Spleeter PyTorch", "active"],
-                  ["Forensic Corridor Classifier", "Stream Repeat Ratio & Bot Filter", "active"],
-                  ["Advance Recoupment Model", "Algorithmic Cashflow Simulator", "active"],
+                  ["Breakout score", "Hand-weighted logistic heuristic (uncalibrated)", "heuristic"],
+                  ["CREPE f0 Pitch Accuracy", "Not implemented (sample visuals for demo artists only)", "not built"],
+                  ["4-Stem Audio Separation", "Not implemented", "not built"],
+                  ["Plays-per-listener corridor", "Last.fm ratio against an uncalibrated corridor", "heuristic"],
+                  ["Advance scenario", "Assumption-driven calculator", "scenario"],
                   ["FFmpeg Audio Transcoder", "Standard Audio Engine", sys?.ffmpeg ? "active" : "system default"]
                 ].map(([a, b, c]) => (
                   <tr key={a}>
@@ -771,7 +771,7 @@ function Scoring({ cfg, reload }) {
         </Panel>
 
         <Panel
-          title="Machine Learning Retraining Trigger"
+          title="Model training status"
           sub="Synchronize ML models with newly imported telemetry"
         >
           <div style={{ marginBottom: 14 }}>
@@ -779,15 +779,15 @@ function Scoring({ cfg, reload }) {
               value={mod?.trained ? 100 : 85}
               label="Model Readiness"
               color={PAL[1]}
-              text={mod?.trained ? "Ready" : "Trained"}
+              text={mod?.trained ? "Trained" : "Not trained"}
             />
           </div>
           <p className="sm mu">
-            Triggers retraining of the Breakout Probability regressor, 90-day trajectory confidence bands, and intonation tolerance models.
+            No model is trained: the platform stores no outcome labels yet (for example, which artists later broke out), so there is nothing to fit and no accuracy to report. The button will report that.
           </p>
           <div className="row" style={{ marginTop: 12 }}>
             <button className="btn" disabled={retraining} onClick={handleRetrain}>
-              {retraining ? "Retraining Python Engine…" : "⚡ Retrain Prediction Models"}
+              {retraining ? "Checking…" : "Retrain (not available yet)"}
             </button>
           </div>
           {retrainMsg && (
@@ -822,7 +822,7 @@ function Guideline() {
           Unlike legacy DSP analytics dashboards that report vanity metrics on already established mega-stars, MSANII focuses exclusively on <b>upcoming artists who have not finished 5 years in the music industry</b> and whose grassroots numbers are beginning to rise.
         </p>
         <p>
-          By combining DSP velocity feeds with deep psychoacoustic audio forensics (CREPE neural pitch tracking, Demucs 4-stem occupancy) and algorithmic deal valuation ($3,750 benchmark advance, 8.4-month recoupment), MSANII gives A&amp;R teams unfair speed and scientific precision.
+          MSANII combines public audience signals, human A&amp;R reviews and basic audio measurements (tempo, key, loudness proxy), shows the source and date of every figure, and says plainly when data is missing instead of estimating. Advanced acoustic analysis (pitch accuracy, stems) and a trained breakout model are planned, not built.
         </p>
       </Panel>
 
@@ -866,10 +866,10 @@ function Guideline() {
         <Panel title="4. A&amp;R Valuation &amp; Deal Architecture">
           <ul className="sm" style={{ paddingLeft: 18, lineHeight: 1.6 }}>
             <li>
-              <b>$3,750 Benchmark Advance:</b> Optimized upfront investment for upcoming breakout talent, balancing risk and commercial appeal.
+              <b>Advance scenario:</b> A transparent calculation from observed listeners and the assumptions you can see and change. It supports a negotiation; it is not a valuation.
             </li>
             <li>
-              <b>8.4-Month Recoupment Horizon:</b> Algorithmic recoupment projection based on 75,109 monthly listeners and +24.8% MoM velocity.
+              <b>Recoupment horizon:</b> Advance divided by the projected monthly label income under the same stated assumptions.
             </li>
             <li>
               <b>Deal Types Supported:</b> Exclusive Master Licensing (70/30), Distribution &amp; Marketing Services (85/15), and 360 Development Deal (50/50).
@@ -883,11 +883,10 @@ function Guideline() {
               <b>Public Access Request:</b> Visitors enter their email, name, organization, and requested role on the login portal.
             </li>
             <li>
-              <b>Admin E-mail Notification:</b> An instant notification with one-click approve/reject URLs is delivered directly to:
-              <br /><code>kimothojackson1125@gmail.com</code>
+              <b>Admin E-mail Notification:</b> The address in <code>MSANII_NOTIFICATION_EMAIL</code> is told about each new request. Approval happens here, while signed in as an administrator, never through an e-mailed link.
             </li>
             <li>
-              <b>Automated Credential Dispatch:</b> Upon approval, a cryptographically secure temporary password and onboarding guideline are automatically emailed to the applicant.
+              <b>Invite link:</b> Upon approval the applicant receives a single-use link (72 hours) and chooses their own password. No password is ever generated or e-mailed.
             </li>
           </ul>
         </Panel>
@@ -911,7 +910,7 @@ function Guideline() {
             <ol className="sm" style={{ paddingLeft: 18, lineHeight: 1.6 }}>
               <li>Push this repository to GitHub or run <code>vercel</code> CLI in this directory.</li>
               <li>In Vercel Project Settings, add the environment variables:
-                <br /><code>SUPABASE_DB_URL</code>, <code>SECRET_KEY</code>, <code>ADMIN_NOTIFICATION_EMAIL=kimothojackson1125@gmail.com</code>
+                <br /><code>SUPABASE_DB_URL</code>, <code>MSANII_FERNET_KEY</code>, <code>MSANII_ALLOWED_ORIGINS</code>, <code>MSANII_BASE_URL</code>, <code>MSANII_ADMIN_EMAIL</code>, <code>MSANII_ADMIN_PASSWORD</code> (first admin only)
               </li>
               <li>Deploy! The <code>vercel.json</code> automatically routes <code>/api/*</code> to Python serverless and static assets to the React build.</li>
             </ol>
@@ -952,9 +951,9 @@ function Team() {
 
   const handleApproveReq = async (rid) => {
     try {
-      setReqActionMsg("Approving request & generating credentials…");
+      setReqActionMsg("Approving request…");
       const r = await api(`/auth/access-requests/${rid}/approve`, { method: "POST" });
-      setReqActionMsg(`✓ Access approved for ${r.email}. Temporary password: ${r.temp_password}`);
+      setReqActionMsg(r.emailed ? `✓ Approved. An e-mail with a set-your-password link was sent to ${r.email}.` : `✓ Approved. E-mail is not configured: send ${r.email} this single-use link (shown once, valid ${r.expires_in_hours}h): ${window.location.origin}/?invite=${r.invite_token}`);
       reloadReqs();
       reload();
     } catch (err) {
@@ -981,7 +980,7 @@ function Team() {
       {/* Access Requests Queue */}
       <Panel
         title={`Pending Access Requests (${pendingRequests.length})`}
-        sub="Requests triggered from the login portal routed to kimothojackson1125@gmail.com for review."
+        sub="Requests submitted from the login portal. Approve or reject them here."
       >
         {reqActionMsg && (
           <div className="bn" style={{ background: "rgba(16, 185, 129, 0.15)", borderColor: "#10b981", marginBottom: 12 }}>

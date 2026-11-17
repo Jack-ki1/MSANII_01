@@ -9,7 +9,7 @@ from .db import db, audit
 SID, SESSION_TTL = "msanii_sid", 8 * 3600
 ROLES = {"viewer": 1, "reviewer": 2, "admin": 3}
 EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,255}\.[^@\s]{2,}$")
-EXEMPT = {"api.login", "api.accept_invite", "api.request_access", "api.approve_access_link"}      # no session yet; protected by Origin check + JSON-only + rate limits
+EXEMPT = {"api.login", "api.accept_invite", "api.request_access"}      # no session yet; protected by Origin check + JSON-only + rate limits
 DUMMY = generate_password_hash("not-a-real-password")
 
 class ApiError(Exception):
