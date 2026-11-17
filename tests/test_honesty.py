@@ -172,6 +172,11 @@ class Startup(unittest.TestCase):
             os.environ["SUPABASE_DB_URL"] = "postgresql://u:p@db.example.supabase.co:6543/postgres"; self.assertTrue(m.get_pg_url().endswith("?sslmode=require"))
             os.environ["SUPABASE_DB_URL"] = "postgresql://u:p@localhost:5432/x"; self.assertNotIn("sslmode", m.get_pg_url())
             os.environ["SUPABASE_DB_URL"] = "sqlite:///x"; self.assertIsNone(m.get_pg_url())
+            # what the Supabase-Vercel integration puts in POSTGRES_URL: the extra `supa` parameter must be dropped, the password left untouched
+            os.environ.pop("SUPABASE_DB_URL"); os.environ["POSTGRES_URL"] = "postgres://postgres.abcd:p%40ss%3Aw0rd@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require&supa=base-pooler.x"
+            u = m.get_pg_url(); self.assertNotIn("supa=", u); self.assertIn("p%40ss%3Aw0rd@aws-0-eu-west-1.pooler.supabase.com:6543/postgres", u); self.assertEqual(u.count("sslmode"), 1)
+            os.environ["POSTGRES_URL"] = "postgres://u:p@host.supabase.com:6543/postgres?pgbouncer=true"; self.assertEqual(m.get_pg_url(), "postgres://u:p@host.supabase.com:6543/postgres?sslmode=require")
+            self.assertIs(__import__("psycopg2").extensions.parse_dsn(m.get_pg_url())["host"] == "host.supabase.com", True)      # the real driver accepts the cleaned string
         finally:
             for k, v in old.items():
                 os.environ.pop(k, None)

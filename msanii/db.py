@@ -1,4 +1,5 @@
 import os, re, json, time, sqlite3, hashlib, logging, threading
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from flask import g, current_app, request, has_request_context
 
 SCHEMA = """
@@ -84,12 +85,19 @@ class PgConnection:
     def rollback(self): self.conn.rollback()
 
 
+_DRIVER_UNSAFE = {"supa", "pgbouncer", "schema", "connection_limit", "pool_timeout"}   # added by Supabase/Prisma connection strings; libpq rejects them
+
 def get_pg_url():
+    """Connection string from SUPABASE_DB_URL, DATABASE_URL or POSTGRES_URL (the one the Supabase-Vercel integration creates).
+    Query parameters that only Supabase/Prisma understand (e.g. `supa=base-pooler.x`) are removed because the PostgreSQL driver errors on them,
+    and TLS is required unless the host is local."""
     u = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not u.startswith(("postgres://", "postgresql://")): return None
-    if "sslmode=" not in u and not re.search(r"@(localhost|127\.0\.0\.1)[:/]", u):
-        u += ("&" if "?" in u else "?") + "sslmode=require"           # Supabase only accepts TLS connections
-    return u
+    parts = urlsplit(u)
+    q = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() not in _DRIVER_UNSAFE]
+    local = (parts.hostname or "") in ("localhost", "127.0.0.1", "::1") or not parts.hostname
+    if not local and not any(k.lower() == "sslmode" for k, _ in q): q.append(("sslmode", "require"))     # Supabase only accepts TLS connections
+    return urlunsplit(parts._replace(query=urlencode(q)))
 
 get_supabase_url = get_pg_url    # backwards-compatible name
 
